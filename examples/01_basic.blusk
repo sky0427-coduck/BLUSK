@@ -1,0 +1,68 @@
+// =====================================================
+//  BLUSK 예제 01 - 기본 문법
+//  파일명: 01_basic.blusk
+// =====================================================
+root package.examples.basic;
+
+import blusk26;
+import io;
+import Blusk.num.Math;
+
+@entry
+Blusk public void main() {
+
+    // ── 변수 선언 (gg = 타입 추론) ─────────────────
+    gg name = "BLUSK";
+    gg version = 7;
+    print(f"언어 이름: {name}");
+    print(f"버전: {version}");
+
+    // ── 상수 (num = 재대입 불가) ────────────────────
+    num MAX = 100;
+    print(f"MAX = {MAX}");
+    // MAX = 200;  // ← Checker 에러 발생
+
+    // ── 산술 연산 ───────────────────────────────────
+    gg a = 10;
+    gg b = 3;
+    gg sum  = a + b;
+    gg diff = a - b;
+    gg mul  = a * b;
+    gg div  = a / b;
+    gg mod  = a % b;
+    gg pow  = a ** 2;
+
+    print(f"합: {sum}");
+    print(f"차: {diff}");
+    print(f"곱: {mul}");
+    print(f"나눗셈: {div}");
+    print(f"나머지: {mod}");
+    print(f"제곱: {pow}");
+
+    // ── 조건문 ──────────────────────────────────────
+    if (a > b) {
+        print("a > b");
+    } elseif (a == b) {
+        print("a == b");
+    } else {
+        print("a < b");
+    };
+
+    // ── for 반복 ────────────────────────────────────
+    for (gg i = 0; i < 5; i++) {
+        print(f"i = {i}");
+    };
+
+    // ── while ────────────────────────────────────────
+    gg count = 3;
+    while (count > 0) {
+        print(f"count = {count}");
+        count = count - 1;
+    };
+
+    // ── Math ─────────────────────────────────────────
+    gg sqrtVal = Math.sqrt(144);
+    print(f"sqrt(144) = {sqrtVal}");
+
+    the end;
+}

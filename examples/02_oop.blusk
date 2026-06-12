@@ -1,0 +1,52 @@
+// =====================================================
+//  BLUSK 예제 02 - OOP (forkfrom 상속)
+// =====================================================
+root package.examples.oop;
+
+import blusk26;
+import io;
+import oop;
+
+// ── 기본 클래스 ──────────────────────────────────────
+Blusk public class Animal {
+    gg name;
+    gg sound;
+
+    Animal(gg n, gg s) {
+        name  = n;
+        sound = s;
+    }
+
+    Blusk public void speak() {
+        print(f"{name} says {sound}!");
+    }
+}
+
+// ── 상속 (forkfrom) ──────────────────────────────────
+Blusk public class Dog : forkfrom Animal {
+    gg breed;
+
+    Dog(gg n, gg b) {
+        name  = n;
+        sound = "Woof";
+        breed = b;
+    }
+
+    Blusk public void info() {
+        print(f"{name} is a {breed}");
+    }
+}
+
+// ── 멀티 @entry 지원 ─────────────────────────────────
+@entry
+Blusk public void main() {
+
+    gg dog = new Dog("Rex", "Labrador");
+    dog.speak();
+    dog.info();
+
+    gg cat = new Animal("Whiskers", "Meow");
+    cat.speak();
+
+    the end;
+}

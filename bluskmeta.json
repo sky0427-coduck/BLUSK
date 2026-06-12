@@ -1,0 +1,11 @@
+{
+  "name": "BLUSK",
+  "version": "0.7.0-alpha",
+  "author": "Skyhanry",
+  "description": "차세대 고성능 하이브리드 프로그래밍 언어 — 저수준 제어 + 고수준 편의 + AI 내장",
+  "bluskVersion": "0.7-alpha",
+  "packageRoot": "",
+  "defaultEntry": "main",
+  "mainClasses": ["main"],
+  "dependencies": []
+}

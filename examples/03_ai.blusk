@@ -1,0 +1,34 @@
+// =====================================================
+//  BLUSK 예제 03 - Saturday AI 내장
+// =====================================================
+root package.examples.ai;
+
+import blusk26;
+import io;
+import ai;
+
+@entry
+Blusk public void main() {
+
+    // ── 로컬 모델 (llama.cpp .gguf) ──────────────────
+    // gg model = new AI();
+    // model.load("models/llama-3.2-1b.gguf");
+
+    // ── API 모드 (Anthropic) ─────────────────────────
+    // gg model = new AI();
+    // model.load("api:anthropic:claude-sonnet-4-20250514");
+
+    // ── Stub 모드 (테스트용) ─────────────────────────
+    gg bot = new AI();
+    bot.load("stub_model.dat");
+    bot.status();
+
+    gg response = bot.ask("BLUSK 언어의 특징은?", 0.7, 2);
+    print(f"AI: {response}");
+
+    // ── AI 학습 ──────────────────────────────────────
+    // bot.learn("training_data.txt");
+    // bot.save("updated_model.dat");
+
+    the end;
+}

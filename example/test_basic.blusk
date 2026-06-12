@@ -1,0 +1,51 @@
+import blusk26;
+import io;
+import Blusk.num.Math;
+
+@entry
+Blusk public void main() {
+    // ── 1. 기본 변수 선언 (Checker가 rcSkip 마킹) ─────────
+    gg x = 10;
+    gg y = 20;
+    gg result = x + y;
+    
+    print("Basic arithmetic: %d", result);
+    
+    // ── 2. 상수 선언 (num 키워드) ───────────────────────────
+    num PI_CUSTOM = 3.14159;
+    gg circle_area = PI_CUSTOM * 5 * 5;
+    
+    print("Circle area: %d", circle_area);
+    
+    // ── 3. Dead variable (Checker 경고 + 컴파일 스킵) ───────
+    gg unused_var = 999;
+    
+    // ── 4. Math 함수 ─────────────────────────────────────────
+    gg sqrt_val = Math.sqrt(16);
+    print("sqrt(16) = %d", sqrt_val);
+    
+    // ── 5. 배열 ──────────────────────────────────────────────
+    gg[] numbers = {1, 2, 3, 4, 5};
+    print("Array first element: %d", numbers[0]);
+    
+    // ── 6. 조건문 ─────────────────────────────────────────────
+    if (x < y) {
+        print("x is less than y");
+    } else {
+        print("x is not less than y");
+    };
+    
+    // ── 7. 반복문 (for) ───────────────────────────────────────
+    for (gg i = 0; i < 3; i++) {
+        print("Loop iteration: %d", i);
+    };
+    
+    // ── 8. While ──────────────────────────────────────────────
+    gg counter = 0;
+    while (counter < 2) {
+        print("Counter: %d", counter);
+        counter = counter + 1;
+    };
+    
+    the end;
+}

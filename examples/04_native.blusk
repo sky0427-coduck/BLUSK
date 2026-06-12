@@ -1,0 +1,39 @@
+// =====================================================
+//  BLUSK 예제 04 - @native, @unsafe, @Newmemorycancel
+// =====================================================
+root package.examples.lowlevel;
+
+import blusk26;
+import io;
+
+// ── @native: 이 함수는 네이티브 기계어로 컴파일 ──────
+@native
+Blusk public gg fastAdd(gg a, gg b) {
+    the end : return a + b;
+}
+
+// ── @Newmemorycancel: 이 변수 영역은 다른 메모리
+//    작업이 덮어쓰지 않음을 보장 ─────────────────────
+@Newmemorycancel
+gg protectedBuffer = 0;
+
+// ── @unsafe: 저수준 레지스터/GPU 접근 허용
+//    (0.7: 어노테이션 마킹만, 1.0: 실제 저수준 구현) ──
+@unsafe
+Blusk public void lowLevelOp() {
+    // 향후: 어셈블리 인라인, GPU 커널 등
+    print("Low-level operation (stub)");
+}
+
+@entry
+Blusk public void main() {
+
+    gg result = fastAdd(10, 20);
+    print(f"fastAdd(10, 20) = {result}");
+
+    print(f"Protected buffer = {protectedBuffer}");
+
+    lowLevelOp();
+
+    the end;
+}

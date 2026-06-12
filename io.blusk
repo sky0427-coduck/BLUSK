@@ -1,0 +1,4 @@
+Blusk void main() {
+print("IO module loaded!");
+the end;
+}

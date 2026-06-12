@@ -1,0 +1,4 @@
+Blusk void main() {
+print("OOP module loaded!");
+the end;
+}

@@ -1,0 +1,39 @@
+import blusk26;
+import io;
+
+// ── Checker 테스트: RC 생략, Dead code, 순환 참조 ────────
+
+@entry
+Blusk public void main() {
+    
+    // ── Case 1: RC 생략 가능 (단일 소유자, 탈출 안 함) ───────
+    gg local_only = 42;
+    print("Local only: %d", local_only);
+    // → Checker: rcSkip = true
+    
+    // ── Case 2: 상수 재대입 방지 ──────────────────────────────
+    num MAX_SIZE = 100;
+    print("Max size: %d", MAX_SIZE);
+    // MAX_SIZE = 200;  // ← 이 줄 활성화하면 Checker 에러
+    
+    // ── Case 3: Dead variable 경고 ────────────────────────────
+    gg never_used = 777;
+    // → Checker: "Variable 'never_used' declared but never used"
+    
+    // ── Case 4: 사용되는 변수 ─────────────────────────────────
+    gg used_var = 10;
+    gg result = used_var * 2;
+    print("Result: %d", result);
+    
+    // ── Case 5: 배열 (RC 필요, 힙 할당) ──────────────────────
+    gg[] data = {100, 200, 300};
+    print("Data[1]: %d", data[1]);
+    // → Checker: rcSkip = false (배열은 힙 객체)
+    
+    // ── Case 6: @Newmemorycancel 테스트 (주석 처리) ──────────
+    // @Newmemorycancel
+    // gg protected_mem = 5;
+    // protected_mem = 10;  // ← 활성화하면 Checker 에러
+    
+    the end;
+}

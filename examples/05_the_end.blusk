@@ -1,0 +1,27 @@
+// =====================================================
+//  BLUSK 예제 05 - the end 조건부 종료
+// =====================================================
+root package.examples.control;
+
+import blusk26;
+import io;
+
+@entry
+Blusk public void main() {
+
+    gg i = 0;
+
+    for (gg j = 0; j < 10; j++) {
+
+        // the end : if 조건  — 조건 충족 시 즉시 종료
+        the end : if j > 5;
+
+        print(f"j = {j}");
+        i = j;
+    };
+
+    print(f"루프 종료 시 i = {i}");
+
+    // ── 일반 the end ─────────────────────────────────
+    the end;
+}

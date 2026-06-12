@@ -1,0 +1,25 @@
+import blusk26
+import io
+import ai
+
+@Entry
+Blusk void main() {
+    print("=== Saturday AI Test ===");
+
+    saturday.load("saturday.model");
+
+    saturday.ask("안녕!", 0.7, 3);
+
+    saturday.ask("오늘 날씨 어때?", 0.9, 5);
+
+    saturday.learn("data.txt");
+
+    saturday.ask("방금 뭘 배웠어?", 0.5, 2);
+
+    saturday.save("saturday.model");
+
+    saturday.status();
+
+    print("=== Done ===");
+    the end;
+}

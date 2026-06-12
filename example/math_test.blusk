@@ -1,0 +1,61 @@
+import blusk26
+import io
+import Blusk.num.Math
+
+@Entry
+Blusk void main() {
+    print("=== 산술 연산 테스트 ===");
+
+    int a = 10 * 3;
+    print("%d", a);
+
+    int b = a / 2;
+    print("%d", b);
+
+    int c = a % 7;
+    print("%d", c);
+
+    int d = 2 ** 8;
+    print("%d", d);
+
+    print("=== Math 라이브러리 테스트 ===");
+
+    str pi = Math.PI;
+    print("%s", pi);
+
+    str e = Math.E;
+    print("%s", e);
+
+    str s = Math.sqrt(16);
+    print("%s", s);
+
+    str ab = Math.abs(-42);
+    print("%s", ab);
+
+    str fl = Math.floor(3.7);
+    print("%s", fl);
+
+    str ce = Math.ceil(3.2);
+    print("%s", ce);
+
+    str ro = Math.round(3.5);
+    print("%s", ro);
+
+    str sn = Math.sin(0);
+    print("%s", sn);
+
+    str cs = Math.cos(0);
+    print("%s", cs);
+
+    str ex = Math.exp(1);
+    print("%s", ex);
+
+    str lg = Math.log(Math.E);
+    print("%s", lg);
+
+    str i = Math.I;
+    print("%s", i);
+
+    print("=== Done ===");
+    the end;
+}
