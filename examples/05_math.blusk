@@ -1,0 +1,33 @@
+// =====================================================
+//  05_math.blusk  -  Math 라이브러리
+// =====================================================
+import blusk26;
+import io;
+import Blusk.num.Math;
+
+@entry
+Blusk public void main() {
+    gg a = Math.sqrt(144);
+    gg b = Math.abs(-42);
+    gg c = Math.pow(2, 10);
+    gg d = Math.sin(0);
+    gg e = Math.cos(0);
+    gg f = Math.floor(3.9);
+    gg g = Math.ceil(3.1);
+    gg h = Math.round(3.5);
+    gg pi = Math.PI;
+    gg eu = Math.E;
+
+    print(f"sqrt(144) = {a}");
+    print(f"abs(-42)  = {b}");
+    print(f"2**10     = {c}");
+    print(f"sin(0)    = {d}");
+    print(f"cos(0)    = {e}");
+    print(f"floor(3.9)= {f}");
+    print(f"ceil(3.1) = {g}");
+    print(f"round(3.5)= {h}");
+    print(f"PI = {pi}");
+    print(f"E  = {eu}");
+
+    the end;
+}

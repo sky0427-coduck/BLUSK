@@ -1,6 +1,5 @@
 // =============================================================
-//  compiler.cpp  -  Matrix / switch / as / simd for / for-in 추가
-//  (기존 compileNode에 새 케이스만 추가)
+//  BLUSK compiler.cpp  -  PRINT_EXPR, loop(count,interval) patched
 // =============================================================
 #include "../include/compiler.h"
 #include "../include/error.h"
@@ -17,6 +16,14 @@ bool Compiler::isNumLit(const std::string& s) {
     size_t i=(s[0]=='-')?1:0; bool dot=false;
     for(;i<s.size();i++){if(s[i]=='.'){{if(dot)return false;}dot=true;}else if(!std::isdigit(s[i]))return false;}
     return true;
+}
+
+static std::string kindTag(const std::string& typeKeyword) {
+    if (typeKeyword=="int")    return "i32";
+    if (typeKeyword=="long")   return "i64";
+    if (typeKeyword=="float")  return "f32";
+    if (typeKeyword=="double") return "f64";
+    return "";
 }
 
 uint8_t Compiler::loadValue(const std::string& raw, int) {
@@ -36,24 +43,17 @@ uint8_t Compiler::compileFString(const std::string& tmpl) {
     uint8_t r=ra.alloc(); emit(OP_LOAD_STR,r,0,0,tmpl); return r;
 }
 
-// ──────────────────────────────────────────────────────────────────
-//  컴파일 전 상수 인라이닝 (zero-cost)
-//  num 상수는 LOAD 없이 즉시값으로 emit
-// ──────────────────────────────────────────────────────────────────
 bool Compiler::tryInlineConst(const std::string& name, uint8_t dst) {
     auto it = constTable.find(name);
     if (it == constTable.end()) return false;
     const Value& v = it->second;
-    if (v.isInt())   { emit(OP_LOAD_INT,  dst,0,0,"",v.num.i); return true; }
-    if (v.isFloat()) { emit(OP_LOAD_FLOAT,dst,0,0,"",0,v.num.f); return true; }
+    if (v.isInt())   { emit(OP_LOAD_INT,  dst,0,0, v.isInt32()?"i32":"i64", v.num.i); return true; }
+    if (v.isFloat()) { emit(OP_LOAD_FLOAT,dst,0,0, v.isFloat32()?"f32":"f64", 0, v.num.f); return true; }
     if (v.isString()){ emit(OP_LOAD_STR,  dst,0,0,v.str); return true; }
     if (v.isBool())  { emit(OP_LOAD_BOOL, dst,0,0,"",(int64_t)v.num.b); return true; }
     return false;
 }
 
-// ──────────────────────────────────────────────────────────────────
-//  표현식
-// ──────────────────────────────────────────────────────────────────
 uint8_t Compiler::compileExpr(ASTNode* node) {
     if (!node) { uint8_t r=ra.alloc(); emit(OP_LOAD_NIL,r); return r; }
     const std::string& t=node->type, &v=node->value;
@@ -71,16 +71,14 @@ uint8_t Compiler::compileExpr(ASTNode* node) {
 
     if(t=="VAR_REF") {
         uint8_t r=ra.alloc();
-        // 상수 인라이닝 시도 (zero-cost: runtime LOAD 없앰)
         if (!tryInlineConst(v, r)) emit(OP_LOAD,r,0,0,v);
         return r;
     }
 
-    // as 캐스팅
     if(t=="CAST") {
         uint8_t src=compileExpr(node->children[0]);
         uint8_t d=ra.alloc();
-        emit(OP_CAST,d,src,0,v); // strVal = 타입명
+        emit(OP_CAST,d,src,0,v);
         return d;
     }
 
@@ -161,9 +159,6 @@ uint8_t Compiler::compileExpr(ASTNode* node) {
     return loadValue(v,node->line);
 }
 
-// ──────────────────────────────────────────────────────────────────
-//  compileCond
-// ──────────────────────────────────────────────────────────────────
 uint8_t Compiler::compileCond(ASTNode* cond) {
     if(!cond){uint8_t r=ra.alloc();emit(OP_LOAD_BOOL,r,0,0,"",0);return r;}
     if(cond->children.size()==1) return compileExpr(cond->children[0]);
@@ -181,9 +176,6 @@ uint8_t Compiler::compileCond(ASTNode* cond) {
     uint8_t r=ra.alloc();emit(OP_LOAD_BOOL,r,0,0,"",0);return r;
 }
 
-// ──────────────────────────────────────────────────────────────────
-//  문장
-// ──────────────────────────────────────────────────────────────────
 void Compiler::compileNode(ASTNode* node) {
     if(!node)return;
     const std::string& t=node->type, &v=node->value;
@@ -203,8 +195,32 @@ void Compiler::compileNode(ASTNode* node) {
     if(t=="THE_END")        {emit(OP_HALT);return;}
     if(t=="THE_END_IF")     {uint8_t mk=ra.current();uint8_t cr=compileCond(node->children.empty()?nullptr:node->children[0]);emit(OP_HALT_IF,0,cr);ra.resetTo(mk);return;}
     if(t=="THE_END_RETURN"||t=="RETURN"){uint8_t mk=ra.current();uint8_t vr=node->children.empty()?ra.alloc():compileExpr(node->children[0]);emit(OP_RETURN,0,vr);ra.resetTo(mk);return;}
-    if(t=="BREAK")   {emit(OP_BREAK);return;}
-    if(t=="CONTINUE"){emit(OP_CONTINUE);return;}
+    // break/continue compile directly to OP_JUMP using the enclosing
+    // loop's LoopContext. "continue" jumps straight to the loop's
+    // increment/recheck point; "break" emits a JUMP that gets patched
+    // once the loop's end PC is known. This replaces an earlier "find
+    // the nearest JUMP at runtime" approach that broke as soon as
+    // break/continue appeared inside a nested if/switch -- the runtime
+    // scan would grab whatever JUMP happened to come next (e.g. an
+    // if-statement's own exit jump) instead of the loop's actual exit.
+    if(t=="BREAK") {
+        if (!loopStack.empty()) {
+            size_t idx = bytecode.size();
+            emit(OP_JUMP, 0, 0, 0, "", 0);
+            loopStack.back().breakPatches.push_back(idx);
+        } else {
+            emit(OP_BREAK);
+        }
+        return;
+    }
+    if(t=="CONTINUE") {
+        if (!loopStack.empty()) {
+            emit(OP_JUMP, 0, 0, 0, "", (int64_t)loopStack.back().continueTarget);
+        } else {
+            emit(OP_CONTINUE);
+        }
+        return;
+    }
 
     if(t=="TASK_SLEEP"){
         uint8_t mk=ra.current();uint8_t r=ra.alloc();
@@ -217,12 +233,19 @@ void Compiler::compileNode(ASTNode* node) {
         uint8_t mk=ra.current();
         if(node->children.empty()){uint8_t r=ra.alloc();emit(OP_LOAD_STR,r,0,0,v);emit(OP_PRINT,0,r);}
         else {
-            uint8_t fr=ra.alloc();emit(OP_LOAD_STR,fr,0,0,v);
-            ASTNode* arg=node->children[0];uint8_t ar;
-            if(arg->type=="ARRAY_SIZE"){ar=ra.alloc();emit(OP_SIZE,ar,0,0,arg->value);}
-            else if(arg->type=="ARRAY_GET")ar=compileExpr(arg);
-            else{ar=ra.alloc();emit(OP_LOAD,ar,0,0,arg->value);}
-            emit(OP_PRINT_FMT,0,fr,ar);
+            ASTNode* arg=node->children[0];
+            if(arg->type=="PRINT_EXPR") {
+                // print(expr) -- variable, Matrix, call, etc. compiled directly
+                uint8_t r = arg->children.empty() ? ra.alloc() : compileExpr(arg->children[0]);
+                emit(OP_PRINT,0,r);
+            } else {
+                uint8_t fr=ra.alloc();emit(OP_LOAD_STR,fr,0,0,v);
+                uint8_t ar;
+                if(arg->type=="ARRAY_SIZE"){ar=ra.alloc();emit(OP_SIZE,ar,0,0,arg->value);}
+                else if(arg->type=="ARRAY_GET")ar=compileExpr(arg);
+                else{ar=ra.alloc();emit(OP_LOAD,ar,0,0,arg->value);}
+                emit(OP_PRINT_FMT,0,fr,ar);
+            }
         }
         ra.resetTo(mk);return;
     }
@@ -232,20 +255,16 @@ void Compiler::compileNode(ASTNode* node) {
         emit(OP_PRINT_FMT,0,fr,fr);ra.resetTo(mk);return;
     }
 
-    // ── MATRIX_DECL ────────────────────────────────────────────
     if(t=="MATRIX_DECL") {
         if(node->children.empty())return;
         ASTNode* nm=node->children[0];
         const std::string& name=nm->value;
         if(isDead(name))return;
         uint8_t mk=ra.current();
-
-        // 행 벡터들 수집
         std::vector<std::vector<double>> rows;
-        std::string op="*"; // 기본 연산
+        std::string op="*";
         for(auto* child:nm->children){
             if(child->type=="MATRIX_ROW"){
-                // value: "1.0,2.0,3.0,4.0"
                 std::vector<double> row;
                 std::istringstream ss(child->value);
                 std::string item;
@@ -254,15 +273,9 @@ void Compiler::compileNode(ASTNode* node) {
                 rows.push_back(row);
             } else if(child->type=="MATRIX_OP") op=child->value;
         }
-
         if(rows.empty()){ra.resetTo(mk);return;}
-
-        // 행렬 데이터를 레지스터에 로드
-        // OP_MATRIX_NEW: strVal="rows,cols", src1=첫 원소 reg, intVal=총 원소 수
         size_t numRows=rows.size();
         size_t numCols=rows.empty()?0:rows[0].size();
-
-        // 원소를 연속 레지스터에 로드
         uint8_t firstReg=ra.current();
         int totalElems=0;
         for(auto& row:rows) for(double val:row){
@@ -270,7 +283,6 @@ void Compiler::compileNode(ASTNode* node) {
             emit(OP_LOAD_FLOAT,r,0,0,"",0,val);
             totalElems++;
         }
-
         uint8_t d=ra.alloc();
         std::string dims=std::to_string(numRows)+","+std::to_string(numCols)+","+op;
         emit(OP_MATRIX_NEW,d,firstReg,0,dims,totalElems);
@@ -278,7 +290,6 @@ void Compiler::compileNode(ASTNode* node) {
         ra.resetTo(mk);return;
     }
 
-    // ── SIMD_FOR ─────────────────────────────────────────────────
     if(t=="SIMD_FOR"){
         uint8_t mk=ra.current();
         uint8_t vr=ra.alloc();emit(OP_LOAD,vr,0,0,v);
@@ -286,88 +297,74 @@ void Compiler::compileNode(ASTNode* node) {
         ra.resetTo(mk);return;
     }
 
-    // ── SWITCH ───────────────────────────────────────────────────
     if(t=="SWITCH") {
         uint8_t mk=ra.current();
-        // children[0] = 표현식, children[1..] = CASE/DEFAULT
         uint8_t switchReg=compileExpr(node->children[0]);
-
         std::vector<size_t> endJumps;
         size_t defaultIdx=std::string::npos;
-
         for(size_t ci=1;ci<node->children.size();ci++){
             ASTNode* c=node->children[ci];
             if(c->type=="CASE"){
-                // 케이스 값 로드
                 uint8_t caseReg=ra.alloc();
                 if(isNumLit(c->value)) emit(OP_LOAD_INT,caseReg,0,0,"",std::stoll(c->value));
                 else                    emit(OP_LOAD,caseReg,0,0,c->value);
-                // 비교
                 uint8_t cmpReg=ra.alloc();
                 emit(OP_CMP_EQ,cmpReg,switchReg,caseReg);
                 size_t skipIdx=bytecode.size();
                 emit(OP_JUMP_IFNOT,0,cmpReg,0,"",0);
-                // 본체
                 if(!c->children.empty()) compileNode(c->children[0]);
                 endJumps.push_back(bytecode.size());
                 emit(OP_JUMP,0,0,0,"",0);
                 bytecode[skipIdx].intVal=(int64_t)bytecode.size();
             } else if(c->type=="DEFAULT"){
-                defaultIdx=ci; // 마지막에 처리
+                defaultIdx=ci;
             }
         }
-
-        // default
         if(defaultIdx!=std::string::npos){
             ASTNode* d=node->children[defaultIdx];
             if(!d->children.empty()) compileNode(d->children[0]);
         }
-
         int64_t end=(int64_t)bytecode.size();
         for(size_t i:endJumps) bytecode[i].intVal=end;
         ra.resetTo(mk);return;
     }
 
-    // ── FOR_IN (범위 기반) ──────────────────────────────────────
     if(t=="FOR_IN"&&node->children.size()>=3){
         uint8_t mk=ra.current();
-        // children: [0]=VAR_NAME, [1]=ARRAY_REF, [2]=BLOCK
         const std::string& varNm=node->children[0]->value;
         const std::string& arrNm=node->children[1]->value;
-
-        // i = 0
         uint8_t iReg=ra.alloc(); emit(OP_LOAD_INT,iReg,0,0,"",0);
         emit(OP_STORE,0,iReg,0,"__forin_i__"+arrNm,STORE_RCSKIP);
-
-        // len = size(arr)
         uint8_t lenReg=ra.alloc(); emit(OP_SIZE,lenReg,0,0,arrNm);
         emit(OP_STORE,0,lenReg,0,"__forin_len__"+arrNm,STORE_RCSKIP);
-
         size_t loopStart=bytecode.size();
-
-        // cond: i < len
         uint8_t ci=ra.alloc(); emit(OP_LOAD,ci,0,0,"__forin_i__"+arrNm);
         uint8_t cl=ra.alloc(); emit(OP_LOAD,cl,0,0,"__forin_len__"+arrNm);
         uint8_t cr=ra.alloc(); emit(OP_CMP_LT,cr,ci,cl);
         size_t jo=bytecode.size(); emit(OP_JUMP_IFNOT,0,cr,0,"",0);
         ra.resetTo(mk);
-
-        // varNm = arr[i]
         uint8_t elemIdx=ra.alloc(); emit(OP_LOAD,elemIdx,0,0,"__forin_i__"+arrNm);
         uint8_t elemReg=ra.alloc(); emit(OP_ARRAY_GET,elemReg,elemIdx,0,arrNm);
         emit(OP_STORE,0,elemReg,0,varNm,STORE_RCSKIP);
 
-        // body
+        // "continue" must land on the increment step below, not the
+        // condition recheck at loopStart, so the index still advances.
+        loopStack.push_back(LoopContext{});
+        loopStack.back().continueTarget = bytecode.size();
+
         compileNode(node->children[2]);
 
-        // i++
         uint8_t iCur=ra.alloc(); emit(OP_LOAD,iCur,0,0,"__forin_i__"+arrNm);
         uint8_t one=ra.alloc();  emit(OP_LOAD_INT,one,0,0,"",1);
         uint8_t iNew=ra.alloc(); emit(OP_ADD,iNew,iCur,one);
         emit(OP_STORE,0,iNew,0,"__forin_i__"+arrNm,STORE_RCSKIP);
-
         emit(OP_JUMP,0,0,0,"",(int64_t)loopStart);
         bytecode[jo].intVal=(int64_t)bytecode.size();
+
+        for (size_t patchIdx : loopStack.back().breakPatches)
+            bytecode[patchIdx].intVal = (int64_t)bytecode.size();
+        loopStack.pop_back();
+
         ra.resetTo(mk);return;
     }
 
@@ -378,24 +375,48 @@ void Compiler::compileNode(ASTNode* node) {
         bool isConst=(v=="num");
         if(isDead(name))return;
         uint8_t mk=ra.current();uint8_t vr;
+        std::string tag = kindTag(v);
+
         if(nm->children.empty()){vr=ra.alloc();emit(OP_LOAD_NIL,vr);}
         else{
             ASTNode* rhs=nm->children[0];
             if(rhs->type=="VAR_VALUE_STR"){vr=ra.alloc();emit(OP_LOAD_STR,vr,0,0,rhs->value);}
+            else if(!tag.empty() && rhs->type=="NUM_LIT") {
+                vr=ra.alloc();
+                bool isF = (tag=="f32"||tag=="f64");
+                if (isF) emit(OP_LOAD_FLOAT, vr,0,0, tag, 0, std::stod(rhs->value));
+                else      emit(OP_LOAD_INT,   vr,0,0, tag, std::stoll(rhs->value));
+            }
             else vr=compileExpr(rhs);
         }
-        // num 상수: constTable에 등록 (런타임 LOAD 불필요 → zero-cost)
-        if(isConst){
-            // 값을 constTable에 등록 (컴파일 시 이미 알고 있을 때만)
-            // VM에서 OP_STORE CONST로 처리하고 constTable 업데이트는 VM이
+        // Auto-cast to the declared width if the initializer is a non-trivial
+        // expression -- arithmetic promotion may have widened the result
+        // (e.g. "int x = a + b;" where a/b are long would otherwise stay
+        // 64-bit through the STORE).
+        if (needsCastOnAssign(v) && !(nm->children.empty()) && nm->children[0]->type != "NUM_LIT") {
+            uint8_t cast = ra.alloc();
+            emit(OP_CAST, cast, vr, 0, v);
+            vr = cast;
         }
         emit(OP_STORE,0,vr,0,name,storeFlag(name,isConst));
         ra.resetTo(mk);return;
     }
+
     if(t=="ASSIGN"){
         if(isDead(v))return;
         uint8_t mk=ra.current();
         uint8_t vr=node->children.empty()?ra.alloc():compileExpr(node->children[0]);
+        // Auto-cast the arithmetic result back to the variable's declared
+        // width on reassignment (e.g. "int x = x + 1;" stays 32-bit instead
+        // of silently widening to long through operand promotion -- the
+        // literal 1 has no type tag so it defaults to long, and int+long
+        // promotes to long).
+        std::string declType = declaredTypeOf(v);
+        if (needsCastOnAssign(declType)) {
+            uint8_t cast = ra.alloc();
+            emit(OP_CAST, cast, vr, 0, declType);
+            vr = cast;
+        }
         emit(OP_STORE,0,vr,0,v,storeFlag(v,false));
         ra.resetTo(mk);return;
     }
@@ -451,7 +472,18 @@ void Compiler::compileNode(ASTNode* node) {
         uint8_t mk=ra.current();compileNode(node->children[0]);
         size_t ls=bytecode.size();
         uint8_t cr=compileCond(node->children[1]);size_t jo=bytecode.size();emit(OP_JUMP_IFNOT,0,cr,0,"",0);
-        ra.resetTo(mk);compileNode(node->children[3]);
+        ra.resetTo(mk);
+
+        // "continue" must land on the step (increment) below, not the
+        // condition check at ls, so the loop variable still advances.
+        // Body and step are emitted back-to-back with nothing in between,
+        // so bytecode.size() right now is exactly where the step will
+        // start once the body finishes compiling.
+        loopStack.push_back(LoopContext{});
+        loopStack.back().continueTarget = bytecode.size();
+
+        compileNode(node->children[3]);
+
         ASTNode* step=node->children[2];
         uint8_t sv=ra.alloc();emit(OP_LOAD,sv,0,0,step->value);
         uint8_t one=ra.alloc();emit(OP_LOAD_INT,one,0,0,"",1);
@@ -459,41 +491,102 @@ void Compiler::compileNode(ASTNode* node) {
         if(step->line==-1)emit(OP_SUB,nv,sv,one);else emit(OP_ADD,nv,sv,one);
         emit(OP_STORE,0,nv,0,step->value,storeFlag(step->value,false));
         emit(OP_JUMP,0,0,0,"",(int64_t)ls);bytecode[jo].intVal=(int64_t)bytecode.size();
+
+        for (size_t patchIdx : loopStack.back().breakPatches)
+            bytecode[patchIdx].intVal = (int64_t)bytecode.size();
+        loopStack.pop_back();
+
         ra.resetTo(mk);return;
     }
     if(t=="WHILE"){
         uint8_t mk=ra.current();size_t ls=bytecode.size();
         uint8_t cr=compileCond(node->children[0]);size_t jo=bytecode.size();emit(OP_JUMP_IFNOT,0,cr,0,"",0);
-        ra.resetTo(mk);compileNode(node->children[1]);
+        ra.resetTo(mk);
+
+        // "continue" jumps straight back to the condition recheck -- a
+        // while loop has no separate increment step, so ls is the
+        // correct continue target.
+        loopStack.push_back(LoopContext{});
+        loopStack.back().continueTarget = ls;
+
+        compileNode(node->children[1]);
         emit(OP_JUMP,0,0,0,"",(int64_t)ls);bytecode[jo].intVal=(int64_t)bytecode.size();
+
+        for (size_t patchIdx : loopStack.back().breakPatches)
+            bytecode[patchIdx].intVal = (int64_t)bytecode.size();
+        loopStack.pop_back();
+
         ra.resetTo(mk);return;
     }
+
+    // ── LOOP : count-based repetition ─────────────────────────
+    // loop(count, intervalSeconds) { ... }
+    //   Repeats the body exactly `count` times. Sleeps `intervalSeconds`
+    //   after each iteration (uses existing SLEEP/STORE/CMP/JUMP opcodes,
+    //   no new opcode needed -- zero-cost reuse of the instruction set).
     if(t=="LOOP"){
         ASTNode *tot=nullptr,*ivl=nullptr,*blk=nullptr;
         for(auto* c:node->children){if(c->type=="LOOP_TOTAL")tot=c;else if(c->type=="LOOP_INTERVAL")ivl=c;else if(c->type=="BLOCK")blk=c;}
-        if(tot){int64_t tms=std::stoll(tot->value)*1000;double ims=ivl?std::stoll(ivl->value)*1000.0:1000.0;emit(OP_PERF_NOW,0,0,0,"__loop_start__",tms,ims);}
-        size_t ls=bytecode.size();
-        if(blk)compileNode(blk);else if(!node->children.empty())compileNode(node->children[0]);
-        emit(OP_JUMP,0,0,0,"",(int64_t)ls);return;
-    }
-    if(t=="AI_LOAD"||t=="AI_ASK"||t=="AI_LEARN"||t=="AI_SAVE"||t=="AI_STATUS"){
-        if(!hasAI){BluskError::report("AI requires 'import ai'",filename,node->line);return;}
-        uint8_t mk=ra.current();
-        if(t=="AI_LOAD"){std::string path=node->children.empty()?"":node->children[0]->value;uint8_t r=ra.alloc();emit(OP_LOAD_STR,r,0,0,path);emit(OP_AI_LOAD,0,r,0,v);}
-        else if(t=="AI_ASK"){
-            std::string prompt=node->children.size()>0?node->children[0]->value:"";
-            double temp=0;int64_t sents=0;
-            if(node->children.size()>1)try{temp=std::stod(node->children[1]->value);}catch(...){}
-            if(node->children.size()>2)try{sents=std::stoll(node->children[2]->value);}catch(...){}
-            uint8_t pr=ra.alloc();emit(OP_LOAD_STR,pr,0,0,prompt);uint8_t dr=ra.alloc();
-            emit(OP_AI_ASK,dr,pr,0,v,sents,temp);
-            if(node->children.size()>3)emit(OP_STORE,0,dr,0,node->children[3]->value,STORE_NORMAL);
+
+        if (tot) {
+            uint8_t mk=ra.current();
+            int64_t totalCount = 0;
+            try { totalCount = std::stoll(tot->value); } catch(...) {}
+            int64_t intervalMs = 0;
+            if (ivl) { try { intervalMs = std::stoll(ivl->value) * 1000; } catch(...) {} }
+
+            uint8_t iReg = ra.alloc();
+            emit(OP_LOAD_INT, iReg, 0, 0, "", 0);
+            emit(OP_STORE, 0, iReg, 0, "__loop_count_i__", STORE_RCSKIP);
+
+            size_t loopStart = bytecode.size();
+
+            uint8_t ci = ra.alloc(); emit(OP_LOAD, ci, 0, 0, "__loop_count_i__");
+            uint8_t cn = ra.alloc(); emit(OP_LOAD_INT, cn, 0, 0, "", totalCount);
+            uint8_t cr = ra.alloc(); emit(OP_CMP_LT, cr, ci, cn);
+            size_t jo = bytecode.size(); emit(OP_JUMP_IFNOT, 0, cr, 0, "", 0);
+            ra.resetTo(mk);
+
+            // "continue" must land on the increment step below, not the
+            // condition recheck at loopStart, so the counter still advances.
+            loopStack.push_back(LoopContext{});
+            loopStack.back().continueTarget = bytecode.size();
+
+            if (blk) compileNode(blk); else if (!node->children.empty()) compileNode(node->children[0]);
+
+            if (intervalMs > 0) {
+                uint8_t sv = ra.alloc(); emit(OP_LOAD_INT, sv, 0, 0, "", intervalMs);
+                emit(OP_SLEEP, 0, sv);
+            }
+
+            uint8_t iCur = ra.alloc(); emit(OP_LOAD, iCur, 0, 0, "__loop_count_i__");
+            uint8_t one  = ra.alloc(); emit(OP_LOAD_INT, one, 0, 0, "", 1);
+            uint8_t iNew = ra.alloc(); emit(OP_ADD, iNew, iCur, one);
+            emit(OP_STORE, 0, iNew, 0, "__loop_count_i__", STORE_RCSKIP);
+
+            emit(OP_JUMP, 0, 0, 0, "", (int64_t)loopStart);
+            bytecode[jo].intVal = (int64_t)bytecode.size();
+
+            for (size_t patchIdx : loopStack.back().breakPatches)
+                bytecode[patchIdx].intVal = (int64_t)bytecode.size();
+            loopStack.pop_back();
+
+            ra.resetTo(mk);
+            return;
         }
-        else if(t=="AI_LEARN"){std::string path=node->children.empty()?"":node->children[0]->value;uint8_t r=ra.alloc();emit(OP_LOAD_STR,r,0,0,path);emit(OP_AI_LEARN,0,r,0,v);}
-        else if(t=="AI_SAVE") {std::string path=node->children.empty()?"":node->children[0]->value;uint8_t r=ra.alloc();emit(OP_LOAD_STR,r,0,0,path);emit(OP_AI_SAVE,0,r,0,v);}
-        else{uint8_t r=ra.alloc();emit(OP_AI_STATUS,r,0,0,v);}
-        ra.resetTo(mk);return;
+
+        // No count given -- fall back to unconditional repeat (legacy)
+        loopStack.push_back(LoopContext{});
+        size_t ls=bytecode.size();
+        loopStack.back().continueTarget = ls;
+        if(blk)compileNode(blk);else if(!node->children.empty())compileNode(node->children[0]);
+        emit(OP_JUMP,0,0,0,"",(int64_t)ls);
+        for (size_t patchIdx : loopStack.back().breakPatches)
+            bytecode[patchIdx].intVal = (int64_t)bytecode.size();
+        loopStack.pop_back();
+        return;
     }
+
     for(auto* c:node->children)compileNode(c);
 }
 

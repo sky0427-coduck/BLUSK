@@ -1,0 +1,49 @@
+// =====================================================
+//  02_variables.blusk  -  변수 / 상수 / 캐스팅
+// =====================================================
+import blusk26;
+import io;
+
+@entry
+Blusk public void main() {
+
+    // 타입 추론 변수
+    gg count = 10;
+    gg ratio = 3.14;
+    gg msg   = "BLUSK";
+
+    print(f"count={count}, ratio={ratio}, msg={msg}");
+
+    // 상수 (num)  — Checker가 재대입 방지
+    num MAX = 100;
+    print(f"MAX = {MAX}");
+    // MAX = 999;  // ← Checker 에러
+
+    // as 캐스팅
+    gg f_val  = 9.7;
+    gg as_int = f_val as int;
+    gg as_str = count as str;
+    print(f"9.7 as int = {as_int}");
+    print(f"10 as str  = {as_str}");
+
+    // 산술
+    gg sum = count + 5;
+    gg pow = 2 ** 10;
+    gg mod = count % 3;
+    print(f"sum={sum}, 2**10={pow}, 10%3={mod}");
+
+    // 논리 연산자
+    gg a = 5;
+    gg b = 10;
+    if (a < b && b < 20) {
+        print("복합 조건 true");
+    };
+    if (a > 100 || b == 10) {
+        print("OR 조건 true");
+    };
+    if (!(a == 99)) {
+        print("NOT 조건 true");
+    };
+
+    the end;
+}

@@ -1,5 +1,6 @@
 // =============================================================
-//  BLUSK lexer.cpp  -  Matrix, as, in, null 추가
+//  BLUSK lexer.cpp  -  long/int/float/double/bool/str 추가
+//  (checkVal 미선언 버그 수정: suffix 검사를 peek/peekAt만으로 처리)
 // =============================================================
 #include "../include/lexer.h"
 #include <cctype>
@@ -7,12 +8,12 @@
 
 Lexer::Lexer(const std::string& source) : src(source), pos(0), line(1) {}
 
-char Lexer::peek()             { return pos < src.size() ? src[pos] : '\0'; }
+char Lexer::peek()             { return pos<src.size()?src[pos]:'\0'; }
 char Lexer::peekAt(int offset) { size_t p=pos+offset; return p<src.size()?src[p]:'\0'; }
 void Lexer::advance() { if(pos<src.size()){ if(src[pos]=='\n')line++; pos++; } }
 
 TokenType Lexer::classifyKeyword(const std::string& s) {
-    static const std::unordered_map<std::string, TokenType> kw = {
+    static const std::unordered_map<std::string,TokenType> kw = {
         {"root",     TOKEN_KW_ROOT},    {"package",  TOKEN_KW_PACKAGE},
         {"import",   TOKEN_KW_IMPORT},  {"forkfrom", TOKEN_KW_FORKFROM},
         {"the",      TOKEN_KW_THE_END}, {"Blusk",    TOKEN_KW_BLUSK},
@@ -28,98 +29,115 @@ TokenType Lexer::classifyKeyword(const std::string& s) {
         {"simd",     TOKEN_KW_SIMD},    {"tensor",   TOKEN_KW_TENSOR},
         {"Matrix",   TOKEN_KW_MATRIX},  {"as",       TOKEN_KW_AS},
         {"in",       TOKEN_KW_IN},
+        {"int",      TOKEN_KW_INT},
+        {"long",     TOKEN_KW_LONG},
+        {"float",    TOKEN_KW_FLOAT},
+        {"double",   TOKEN_KW_DOUBLE},
+        {"bool",     TOKEN_KW_BOOL},
+        {"str",      TOKEN_KW_STR},
+        {"string",   TOKEN_KW_STR},
     };
-    auto it = kw.find(s);
-    return it != kw.end() ? it->second : TOKEN_IDENTIFIER;
+    auto it=kw.find(s); return it!=kw.end()?it->second:TOKEN_IDENTIFIER;
 }
 
 Token Lexer::identifier() {
-    std::string val; int sl = line;
-    while (std::isalnum(peek()) || peek()=='_' || peek()=='.') {
-        if (peek()=='.') { if (!std::isalpha(peekAt(1)) && peekAt(1)!='_') break; }
-        val += peek(); advance();
+    std::string val; int sl=line;
+    while (std::isalnum(peek())||peek()=='_'||peek()=='.') {
+        if (peek()=='.') { if (!std::isalpha(peekAt(1))&&peekAt(1)!='_') break; }
+        val+=peek(); advance();
     }
     return { classifyKeyword(val), val, sl };
 }
 
 Token Lexer::number() {
-    std::string val; int sl = line; bool hasDot = false;
-    if (peek()=='0' && (peekAt(1)=='x'||peekAt(1)=='X')) {
-        val+=peek(); advance(); val+=peek(); advance();
-        while (std::isxdigit(peek())) { val+=peek(); advance(); }
-        return { TOKEN_NUMBER, val, sl };
+    std::string val; int sl=line; bool hasDot=false;
+
+    if (peek()=='0'&&(peekAt(1)=='x'||peekAt(1)=='X')) {
+        val+=peek();advance();val+=peek();advance();
+        while(std::isxdigit(peek())){val+=peek();advance();}
+        return {TOKEN_NUMBER,val,sl};
     }
-    if (peek()=='0' && (peekAt(1)=='b'||peekAt(1)=='B')) {
-        val+=peek(); advance(); val+=peek(); advance();
-        while (peek()=='0'||peek()=='1') { val+=peek(); advance(); }
-        return { TOKEN_NUMBER, val, sl };
+    if (peek()=='0'&&(peekAt(1)=='b'||peekAt(1)=='B')) {
+        val+=peek();advance();val+=peek();advance();
+        while(peek()=='0'||peek()=='1'){val+=peek();advance();}
+        return {TOKEN_NUMBER,val,sl};
     }
-    while (std::isdigit(peek()) || (peek()=='.'&&!hasDot&&std::isdigit(peekAt(1)))) {
-        if (peek()=='.') hasDot=true; val+=peek(); advance();
+    while(std::isdigit(peek())||(peek()=='.'&&!hasDot&&std::isdigit(peekAt(1)))){
+        if(peek()=='.') hasDot=true; val+=peek(); advance();
     }
-    return { TOKEN_NUMBER, val, sl };
+
+    // ── 숫자 리터럴 suffix ─────────────────────────────────────
+    // 123L  → long 리터럴
+    // 1.0f  → float 리터럴
+    // (다음 글자가 알파벳/언더스코어로 더 이어지면 식별자이므로 suffix 아님)
+    if (peek()=='L' && !(std::isalnum(peekAt(1))||peekAt(1)=='_')) {
+        advance(); return {TOKEN_NUMBER, val+"L", sl};
+    }
+    if (peek()=='f' && !(std::isalnum(peekAt(1))||peekAt(1)=='_')) {
+        advance(); return {TOKEN_NUMBER, val+"f", sl};
+    }
+    return {TOKEN_NUMBER,val,sl};
 }
 
 Token Lexer::string_() {
-    int sl = line; bool isFStr = false;
-    if (peek()=='f' && peekAt(1)=='"') { isFStr=true; advance(); }
+    int sl=line; bool isFStr=false;
+    if(peek()=='f'&&peekAt(1)=='"'){isFStr=true;advance();}
     advance();
     std::string val;
-    while (peek()!='"' && peek()!='\0') {
-        if (peek()=='\\') {
-            advance();
-            switch(peek()) {
-            case 'n': val+='\n'; break; case 't': val+='\t'; break;
-            case '"': val+='"';  break; case '\\':val+='\\'; break;
-            default:  val+=peek(); break;
+    while(peek()!='"'&&peek()!='\0'){
+        if(peek()=='\\'){advance();
+            switch(peek()){
+            case 'n':val+='\n';break; case 't':val+='\t';break;
+            case '"':val+='"'; break; case '\\':val+='\\';break;
+            default: val+=peek();break;
             }
-        } else val+=peek();
+        }else val+=peek();
         advance();
     }
     advance();
-    return { isFStr ? TOKEN_FSTRING : TOKEN_STRING, val, sl };
+    return {isFStr?TOKEN_FSTRING:TOKEN_STRING,val,sl};
 }
 
 Token Lexer::annotation() {
-    int sl = line; advance();
+    int sl=line; advance();
     std::string val;
-    while (std::isalnum(peek())||peek()=='_') { val+=peek(); advance(); }
-    return { TOKEN_KW_ANNOTATION, val, sl };
+    while(std::isalnum(peek())||peek()=='_'){val+=peek();advance();}
+    return {TOKEN_KW_ANNOTATION,val,sl};
 }
 
-Token Lexer::lineComment()  { while(peek()!='\n'&&peek()!='\0') advance(); return nextToken(); }
+Token Lexer::lineComment()  {while(peek()!='\n'&&peek()!='\0')advance();return nextToken();}
 Token Lexer::blockComment() {
-    advance(); advance();
-    while (peek()!='\0') { if(peek()=='*'&&peekAt(1)=='/'){advance();advance();break;} advance(); }
+    advance();advance();
+    while(peek()!='\0'){if(peek()=='*'&&peekAt(1)=='/'){advance();advance();break;}advance();}
     return nextToken();
 }
 
 Token Lexer::nextToken() {
-    while (std::isspace(peek())) advance();
-    char c = peek(); if (c=='\0') return { TOKEN_EOF, "", line };
-    int sl = line;
+    while(std::isspace(peek()))advance();
+    char c=peek(); if(c=='\0')return{TOKEN_EOF,"",line};
+    int sl=line;
 
-    if (c=='/'&&peekAt(1)=='/') { advance(); advance(); return lineComment(); }
-    if (c=='/'&&peekAt(1)=='*') return blockComment();
-    if (c=='f'&&peekAt(1)=='"') return string_();
-    if (std::isalpha(c)||c=='_') return identifier();
-    if (std::isdigit(c)) return number();
-    if (c=='"') return string_();
-    if (c=='@') return annotation();
+    if(c=='/'&&peekAt(1)=='/')  {advance();advance();return lineComment();}
+    if(c=='/'&&peekAt(1)=='*')  return blockComment();
+    if(c=='f'&&peekAt(1)=='"')  return string_();
+    if(std::isalpha(c)||c=='_') return identifier();
+    if(std::isdigit(c))         return number();
+    if(c=='"')                  return string_();
+    if(c=='@')                  return annotation();
 
     advance();
-    if (c=='*'&&peek()=='*') { advance(); return { TOKEN_SYMBOL, "**", sl }; }
-    if (c=='<'&&peek()=='=') { advance(); return { TOKEN_SYMBOL, "<=", sl }; }
-    if (c=='>'&&peek()=='=') { advance(); return { TOKEN_SYMBOL, ">=", sl }; }
-    if (c=='='&&peek()=='=') { advance(); return { TOKEN_SYMBOL, "==", sl }; }
-    if (c=='+'&&peek()=='+') { advance(); return { TOKEN_SYMBOL, "++", sl }; }
-    if (c=='-'&&peek()=='-') { advance(); return { TOKEN_SYMBOL, "--", sl }; }
-    if (c=='-'&&peek()=='>') { advance(); return { TOKEN_SYMBOL, "->", sl }; }
-    if (c=='.'&&peek()=='.') { advance(); return { TOKEN_SYMBOL, "..", sl }; }
-    if (c=='&'&&peek()=='&') { advance(); return { TOKEN_AND, "&&", sl }; }
-    if (c=='|'&&peek()=='|') { advance(); return { TOKEN_OR,  "||", sl }; }
-    if (c=='!'&&peek()=='=') { advance(); return { TOKEN_SYMBOL, "!=", sl }; }
-    if (c=='!') return { TOKEN_NOT, "!", sl };
+    if(c=='*'&&peek()=='*'){advance();return{TOKEN_SYMBOL,"**",sl};}
+    if(c=='<'&&peek()=='='){advance();return{TOKEN_SYMBOL,"<=",sl};}
+    if(c=='>'&&peek()=='='){advance();return{TOKEN_SYMBOL,">=",sl};}
+    if(c=='='&&peek()=='='){advance();return{TOKEN_SYMBOL,"==",sl};}
+    if(c=='+'&&peek()=='+'){advance();return{TOKEN_SYMBOL,"++",sl};}
+    if(c=='-'&&peek()=='-'){advance();return{TOKEN_SYMBOL,"--",sl};}
+    if(c=='-'&&peek()=='>'){advance();return{TOKEN_SYMBOL,"->",sl};}
+    if(c=='.'&&peek()=='.'){advance();return{TOKEN_SYMBOL,"..",sl};}
+    if(c=='&'&&peek()=='&'){advance();return{TOKEN_AND,"&&",sl};}
+    if(c=='|'&&peek()=='|'){advance();return{TOKEN_OR, "||",sl};}
+    if(c=='!'&&peek()=='='){advance();return{TOKEN_SYMBOL,"!=",sl};}
+    if(c=='!')              return{TOKEN_NOT,"!",sl};
 
-    return { TOKEN_SYMBOL, std::string(1,c), sl };
+    return{TOKEN_SYMBOL,std::string(1,c),sl};
 }

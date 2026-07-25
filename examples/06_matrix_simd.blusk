@@ -1,0 +1,23 @@
+// =====================================================
+//  06_matrix_simd.blusk  -  Matrix + AVX2 SIMD
+// =====================================================
+import blusk26;
+import io;
+import Blusk.num.Math;
+
+@entry
+Blusk public void main() {
+
+    // ── Hadamard (element-wise) 곱 ───────────────────
+    Matrix mat = {(1, 2, 3, 4) * (2, 3, 7, 8)};
+    @simd for mat;
+    print(mat);
+    // 결과: [2, 6, 21, 32]  (AVX2 가속)
+
+    // ── element-wise 덧셈 ─────────────────────────────
+    Matrix sum_mat = {(1, 1, 1, 1) + (10, 20, 30, 40)};
+    @simd for sum_mat;
+    print(sum_mat);
+
+    the end;
+}

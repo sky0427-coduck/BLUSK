@@ -1,5 +1,5 @@
 // =============================================================
-//  BLUSK lexer.h  -  Matrix, as, in 키워드 추가
+//  BLUSK lexer.h  -  long 키워드 추가
 // =============================================================
 #pragma once
 #include <string>
@@ -21,17 +21,21 @@ enum TokenType {
     TOKEN_KW_GG,        TOKEN_KW_NUM,       TOKEN_KW_TRUE,
     TOKEN_KW_FALSE,     TOKEN_KW_NIL,       TOKEN_KW_SIMD,
     TOKEN_KW_TENSOR,    TOKEN_KW_ANNOTATION,
+    TOKEN_KW_MATRIX,    TOKEN_KW_AS,        TOKEN_KW_IN,
+    TOKEN_KW_NULL,
 
-    // ── 신규 ─────────────────────────────────────────────────
-    TOKEN_KW_MATRIX,  // Matrix 타입
-    TOKEN_KW_AS,      // as 캐스팅
-    TOKEN_KW_IN,      // in (for x in arr)
-    TOKEN_KW_NULL,    // null (nil 별칭)
+    // ── 명시적 숫자 타입 키워드 ──────────────────────────────
+    TOKEN_KW_INT,     // int   (32bit 정수)
+    TOKEN_KW_LONG,    // long  (64bit 정수)
+    TOKEN_KW_FLOAT,   // float (32bit 실수)
+    TOKEN_KW_DOUBLE,  // double(64bit 실수)
+    TOKEN_KW_BOOL,    // bool
+    TOKEN_KW_STR,     // str
 
     // 논리 연산자
-    TOKEN_AND,   // &&
-    TOKEN_OR,    // ||
-    TOKEN_NOT,   // !
+    TOKEN_AND,
+    TOKEN_OR,
+    TOKEN_NOT,
 };
 
 struct Token {

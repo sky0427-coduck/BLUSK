@@ -1,0 +1,34 @@
+// =====================================================
+//  09_checker_test.blusk  -  Checker 동작 확인용
+// =====================================================
+import blusk26;
+import io;
+
+@entry
+Blusk public void main() {
+
+    // Case 1: RC 생략 가능 (단일 소유, 탈출 없음)
+    gg local_only = 42;
+    print(f"local_only = {local_only}");
+    // → Checker: rcSkip = true
+
+    // Case 2: 상수 재대입 방지
+    num MAX_SIZE = 100;
+    print(f"MAX_SIZE = {MAX_SIZE}");
+    // MAX_SIZE = 200;  // ← 활성화하면 Checker 에러
+
+    // Case 3: Dead variable 경고
+    gg never_used = 777;
+    // → Checker: "declared but never used" + 컴파일 제외
+
+    // Case 4: 사용되는 변수
+    gg used_var = 10;
+    gg result   = used_var * 2;
+    print(f"result = {result}");
+
+    // Case 5: 배열 (힙 객체, RC 필요)
+    gg[] data = {100, 200, 300};
+    print(f"data[1] = {data[1]}");
+
+    the end;
+}

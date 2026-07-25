@@ -1,5 +1,5 @@
 // =============================================================
-//  BLUSK parser.cpp  -  Matrix / switch-case / as / simd for
+//  BLUSK parser.cpp  -  switch/print(expr)/loop(count,interval) 패치 완료
 // =============================================================
 #include "../include/parser.h"
 #include "../include/error.h"
@@ -20,18 +20,16 @@ bool  Parser::eatVal(const std::string& v){if(checkVal(v)){advance();return true
 void  Parser::skipSemicolon()             {eatVal(";");}
 
 bool Parser::isTypeKeyword(const Token& t) const {
-    return t.type==TOKEN_KW_GG||t.type==TOKEN_KW_NUM||
-           t.value=="int"||t.value=="str"||t.value=="float"||
-           t.value=="double"||t.value=="bool"||t.value=="string";
+    return t.type==TOKEN_KW_GG    || t.type==TOKEN_KW_NUM   ||
+           t.type==TOKEN_KW_INT   || t.type==TOKEN_KW_LONG  ||
+           t.type==TOKEN_KW_FLOAT || t.type==TOKEN_KW_DOUBLE||
+           t.type==TOKEN_KW_BOOL  || t.type==TOKEN_KW_STR;
 }
 bool Parser::isCompOp(const Token& t) const {
     return t.value=="=="||t.value=="!="||t.value=="<"||
            t.value=="<="||t.value==">"||t.value==">=";
 }
 
-// ──────────────────────────────────────────────────────────────────
-//  행 벡터 파싱: (1.0, 2.0, 3.0, 4.0)
-// ──────────────────────────────────────────────────────────────────
 std::vector<double> Parser::parseRowVector() {
     std::vector<double> row;
     eatVal("(");
@@ -49,9 +47,6 @@ std::vector<double> Parser::parseRowVector() {
     return row;
 }
 
-// ──────────────────────────────────────────────────────────────────
-//  최상위
-// ──────────────────────────────────────────────────────────────────
 ASTNode* Parser::parse() {
     ASTNode* root=new ASTNode(); root->type="ROOT";
     while(peek().type!=TOKEN_EOF) {
@@ -105,10 +100,9 @@ ASTNode* Parser::parseAnnotation() {
     std::string annot=peek().value; int line=peek().line; advance();
     std::transform(annot.begin(),annot.end(),annot.begin(),::tolower);
 
-    // @simd for varname;
     if (annot=="simd") {
         if (peek().type==TOKEN_KW_FOR||checkVal("for")) {
-            advance(); // for
+            advance();
             return parseSimdFor();
         }
     }
@@ -129,10 +123,9 @@ ASTNode* Parser::parseAnnotation() {
     return an;
 }
 
-// @simd for varname;
 ASTNode* Parser::parseSimdFor() {
     ASTNode* n=new ASTNode(); n->type="SIMD_FOR"; n->line=peek().line;
-    n->value=peek().value; // 변수명 (행렬/배열 이름)
+    n->value=peek().value;
     advance(); skipSemicolon();
     return n;
 }
@@ -140,7 +133,7 @@ ASTNode* Parser::parseSimdFor() {
 ASTNode* Parser::parseBluskMain(const std::string& annotation) {
     ASTNode* n=new ASTNode(); n->type="MAIN_BLOCK"; n->value=annotation; n->line=peek().line;
     if(!checkVal("{")&&peek().type!=TOKEN_EOF) {
-        advance(); // retType
+        advance();
         if(peek().type==TOKEN_IDENTIFIER||peek().value=="main")
             {n->value=(annotation.empty()||annotation=="default")?peek().value:annotation;advance();}
         if(checkVal("(")) {
@@ -208,9 +201,6 @@ ASTNode* Parser::parseBlock() {
     eatVal("}");return n;
 }
 
-// ──────────────────────────────────────────────────────────────────
-//  문장
-// ──────────────────────────────────────────────────────────────────
 ASTNode* Parser::parseStatement() {
     Token t=peek();
     if(t.value==";")            {advance();return nullptr;}
@@ -229,7 +219,6 @@ ASTNode* Parser::parseStatement() {
     if(t.type==TOKEN_KW_CONTINUE){advance();skipSemicolon();ASTNode* n=new ASTNode();n->type="CONTINUE";return n;}
     if(t.type==TOKEN_KW_RETURN) return parseReturn();
 
-    // Matrix 선언
     if(t.type==TOKEN_KW_MATRIX) return parseMatrixDecl();
 
     if(t.type==TOKEN_KW_GG||t.type==TOKEN_KW_NUM)
@@ -268,22 +257,12 @@ ASTNode* Parser::parseStatement() {
     advance();return nullptr;
 }
 
-// ──────────────────────────────────────────────────────────────────
-//  Matrix mat = {(1,2,3,4) * (2,3,7,8)};
-//
-//  AST: MATRIX_DECL
-//         VAR_NAME "mat"
-//           MATRIX_ROW [1,2,3,4]  (value = "1,2,3,4")
-//           MATRIX_OP  "*"
-//           MATRIX_ROW [2,3,7,8]
-// ──────────────────────────────────────────────────────────────────
 ASTNode* Parser::parseMatrixDecl() {
     ASTNode* n=new ASTNode(); n->type="MATRIX_DECL"; n->line=peek().line;
-    advance(); // Matrix
+    advance();
     ASTNode* nm=new ASTNode(); nm->type="VAR_NAME"; nm->value=peek().value; advance();
     if(checkVal("=")) {
         advance(); eatVal("{");
-        // 첫 번째 행 벡터
         while(!checkVal("}")&&peek().type!=TOKEN_EOF) {
             if(checkVal("(")) {
                 auto row=parseRowVector();
@@ -301,12 +280,12 @@ ASTNode* Parser::parseMatrixDecl() {
     n->children.push_back(nm); skipSemicolon(); return n;
 }
 
-// ──────────────────────────────────────────────────────────────────
-//  switch(a) { case 0 -> expr, case 1 -> expr, default -> expr; }
-// ──────────────────────────────────────────────────────────────────
+// switch(expr) { case V -> stmt, ... , default -> stmt; }
+// case/default body is parsed as a statement (wrapped in a BLOCK node)
+// so print(...), assignments, etc. all work as case bodies.
 ASTNode* Parser::parseSwitch() {
     ASTNode* n=new ASTNode(); n->type="SWITCH"; n->line=peek().line;
-    advance(); // switch
+    advance();
     eatVal("(");
     ASTNode* expr=parseExpr(); eatVal(")");
     n->children.push_back(expr);
@@ -315,20 +294,30 @@ ASTNode* Parser::parseSwitch() {
         if(checkVal("case")) {
             advance();
             ASTNode* c=new ASTNode(); c->type="CASE"; c->line=peek().line;
-            // case 값
             c->value=peek().value; advance();
-            eatVal("->"); // 화살표
-            // 케이스 본체: 표현식 or 블록
-            if(checkVal("{")) c->children.push_back(parseBlock());
-            else              c->children.push_back(parseExpr());
+            eatVal("->");
+            ASTNode* body=new ASTNode(); body->type="BLOCK"; body->line=peek().line;
+            if(checkVal("{")) {
+                delete body; body=parseBlock();
+            } else {
+                ASTNode* stmt=parseStatement();
+                if (stmt) body->children.push_back(stmt);
+            }
+            c->children.push_back(body);
             n->children.push_back(c);
             eatVal(",");
         } else if(checkVal("default")) {
             advance();
             ASTNode* d=new ASTNode(); d->type="DEFAULT"; d->line=peek().line;
             eatVal("->");
-            if(checkVal("{")) d->children.push_back(parseBlock());
-            else              d->children.push_back(parseExpr());
+            ASTNode* body=new ASTNode(); body->type="BLOCK"; body->line=peek().line;
+            if(checkVal("{")) {
+                delete body; body=parseBlock();
+            } else {
+                ASTNode* stmt=parseStatement();
+                if (stmt) body->children.push_back(stmt);
+            }
+            d->children.push_back(body);
             n->children.push_back(d);
             eatVal(","); eatVal(";");
         } else advance();
@@ -382,11 +371,28 @@ ASTNode* Parser::parseArrayDecl(const std::string& kw) {
     n->children.push_back(nm);skipSemicolon();return n;
 }
 
+// print(...) supports three forms:
+//   print("literal")
+//   print("fmt %d", arg)
+//   print(expr)               <- single expression (variable, Matrix, etc.)
 ASTNode* Parser::parsePrint() {
     ASTNode* n=new ASTNode();n->line=peek().line;advance();eatVal("(");
     if(peek().type==TOKEN_FSTRING){n->type="PRINT_FSTR";n->value=peek().value;advance();eatVal(")");skipSemicolon();return n;}
     n->type="PRINT";
-    if(peek().type==TOKEN_STRING){n->value=peek().value;advance();}
+    if(peek().type==TOKEN_STRING){
+        n->value=peek().value;advance();
+    }
+    else if(checkVal(")")) {
+        // print() with no args, fall through
+    }
+    else {
+        // print(expr) -- single expression argument (variable, Matrix, call, etc.)
+        ASTNode* expr=parseExpr();
+        ASTNode* a=new ASTNode();
+        a->type="PRINT_EXPR"; a->line=expr->line;
+        a->children.push_back(expr);
+        n->children.push_back(a);
+    }
     if(checkVal(",")) {
         advance();Token at=peek();ASTNode* a=new ASTNode();a->line=at.line;
         std::string fn=at.value;advance();
@@ -444,18 +450,15 @@ ASTNode* Parser::parseFor() {
     ASTNode* n=new ASTNode();n->type="FOR";n->line=peek().line;advance();
     eatVal("(");
 
-    // for (gg x in arr) {} — 범위 기반
     if((peek().type==TOKEN_KW_GG||isTypeKeyword(peek()))&&peek(2).type==TOKEN_KW_IN) {
         return parseForIn();
     }
 
-    // for (gg i = 0; i <= 3; i++) {}
     ASTNode* init=new ASTNode();init->type="VAR_DECL";init->value=peek().value;advance();
     ASTNode* initNm=new ASTNode();initNm->type="VAR_NAME";initNm->value=peek().value;advance();
     if(checkVal("=")){advance();initNm->children.push_back(parseExpr());}
     init->children.push_back(initNm);skipSemicolon();n->children.push_back(init);
 
-    // 조건
     ASTNode* cond=new ASTNode();cond->type="CONDITION";cond->line=peek().line;
     ASTNode* cl=new ASTNode();cl->type="COND_LEFT"; cl->value=peek().value;advance();
     ASTNode* co=new ASTNode();co->type="COND_OP";   co->value=peek().value;advance();
@@ -464,7 +467,6 @@ ASTNode* Parser::parseFor() {
     cond->children.push_back(cl);cond->children.push_back(co);cond->children.push_back(cr);
     n->children.push_back(cond);
 
-    // 스텝
     ASTNode* step=new ASTNode();step->type="FOR_STEP";step->value=peek().value;step->line=1;advance();
     if(checkVal("++"))       {step->line=1; advance();}
     else if(checkVal("--"))  {step->line=-1;advance();}
@@ -476,11 +478,10 @@ ASTNode* Parser::parseFor() {
 }
 
 ASTNode* Parser::parseForIn() {
-    // for (gg x in arr) {}  — 이미 '(' 소비됨
     ASTNode* n=new ASTNode();n->type="FOR_IN";n->line=peek().line;
-    advance(); // gg/type
+    advance();
     ASTNode* varNm=new ASTNode();varNm->type="VAR_NAME";varNm->value=peek().value;advance();
-    eat(TOKEN_KW_IN); // in
+    eat(TOKEN_KW_IN);
     ASTNode* arrNm=new ASTNode();arrNm->type="ARRAY_REF";arrNm->value=peek().value;advance();
     eatVal(")");
     n->children.push_back(varNm);n->children.push_back(arrNm);
@@ -493,19 +494,35 @@ ASTNode* Parser::parseWhile() {
     n->children.push_back(parseCondition());n->children.push_back(parseBlock());skipSemicolon();return n;
 }
 
+// loop(count, intervalSeconds) { ... }  -- new syntax
+//   Calls the body exactly `count` times, sleeping `intervalSeconds`
+//   between each call.
+// loop(task.time = N, task.interval = M) { ... }  -- legacy syntax, still
+//   supported for backward compatibility.
 ASTNode* Parser::parseLoop() {
     ASTNode* n=new ASTNode();n->type="LOOP";n->line=peek().line;advance();
     if(checkVal("(")) {
         advance();
-        while(!checkVal(")")&&peek().type!=TOKEN_EOF) {
-            std::string kw=peek().value;advance();
-            if(kw=="task"){
-                eatVal(".");std::string sub=peek().value;advance();
-                if(checkVal("="))advance(); else eatVal(",");
-                if(sub=="time")     {ASTNode* t=new ASTNode();t->type="LOOP_TOTAL";    t->value=peek().value;advance();n->children.push_back(t);}
-                else if(sub=="interval"){ASTNode* iv=new ASTNode();iv->type="LOOP_INTERVAL";iv->value=peek().value;advance();n->children.push_back(iv);}
+        if (peek().type == TOKEN_NUMBER) {
+            ASTNode* t=new ASTNode(); t->type="LOOP_TOTAL"; t->value=peek().value; advance();
+            n->children.push_back(t);
+            if (checkVal(",")) {
+                advance();
+                ASTNode* iv=new ASTNode(); iv->type="LOOP_INTERVAL"; iv->value=peek().value; advance();
+                n->children.push_back(iv);
             }
-            eatVal(",");
+        } else {
+            // legacy: task.time = N, task.interval = M
+            while(!checkVal(")")&&peek().type!=TOKEN_EOF) {
+                std::string kw=peek().value;advance();
+                if(kw=="task"){
+                    eatVal(".");std::string sub=peek().value;advance();
+                    if(checkVal("="))advance(); else eatVal(",");
+                    if(sub=="time")     {ASTNode* t=new ASTNode();t->type="LOOP_TOTAL";    t->value=peek().value;advance();n->children.push_back(t);}
+                    else if(sub=="interval"){ASTNode* iv=new ASTNode();iv->type="LOOP_INTERVAL";iv->value=peek().value;advance();n->children.push_back(iv);}
+                }
+                eatVal(",");
+            }
         }
         eatVal(")");
     }
@@ -560,9 +577,6 @@ ASTNode* Parser::parseFString(const std::string& raw) {
     ASTNode* n=new ASTNode();n->type="FSTRING";n->value=raw;return n;
 }
 
-// ──────────────────────────────────────────────────────────────────
-//  표현식 우선순위
-// ──────────────────────────────────────────────────────────────────
 ASTNode* Parser::parseExpr()    { return parseExprOr(); }
 
 ASTNode* Parser::parseExprOr() {
@@ -634,7 +648,6 @@ ASTNode* Parser::parseExprUnary() {
 ASTNode* Parser::parseExprPrimary() {
     Token t=peek();
     if(checkVal("(")) {advance();ASTNode* inner=parseExpr();eatVal(")");
-        // as 캐스팅: (expr) as int
         if(peek().type==TOKEN_KW_AS) {
             advance();
             ASTNode* n=new ASTNode();n->type="CAST";n->value=peek().value;advance();
@@ -646,7 +659,6 @@ ASTNode* Parser::parseExprPrimary() {
     if(t.type==TOKEN_STRING) {ASTNode* n=new ASTNode();n->type="STR_LIT";n->value=t.value;advance();return n;}
     if(t.value=="Math"&&peek(1).value==".") {advance();eatVal(".");std::string f=peek().value;advance();return parseMathCall(f);}
     if(t.type==TOKEN_NUMBER) {ASTNode* n=new ASTNode();n->type="NUM_LIT";n->value=t.value;advance();
-        // as 캐스팅: 3 as float
         if(peek().type==TOKEN_KW_AS){advance();ASTNode* c=new ASTNode();c->type="CAST";c->value=peek().value;advance();c->children.push_back(n);return c;}
         return n;
     }
@@ -664,7 +676,6 @@ ASTNode* Parser::parseExprPrimary() {
             ASTNode* n=new ASTNode();n->type="FIELD_GET";n->value=name+"."+method;return n;
         }
         ASTNode* n=new ASTNode();n->type="VAR_REF";n->value=name;
-        // as 캐스팅: x as int
         if(peek().type==TOKEN_KW_AS){advance();ASTNode* c=new ASTNode();c->type="CAST";c->value=peek().value;advance();c->children.push_back(n);return c;}
         return n;
     }

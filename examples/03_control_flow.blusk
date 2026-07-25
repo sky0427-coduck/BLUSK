@@ -1,0 +1,32 @@
+// =====================================================
+//  03_control_flow.blusk  -  제어 흐름 (switch, for-in, the end)
+// =====================================================
+import blusk26;
+import io;
+
+@entry
+Blusk public void main() {
+
+    // ── switch-case ──────────────────────────────────
+    gg day = 3;
+    switch(day) {
+        case 1 -> print("월요일"),
+        case 2 -> print("화요일"),
+        case 3 -> print("수요일"),
+        default -> print("그 외");
+    };
+
+    // ── 범위 기반 for (for-in) ───────────────────────
+    gg[] nums = {10, 20, 30, 40};
+    for (gg n in nums) {
+        print(f"n = {n}");
+    };
+
+    // ── the end : if 조건부 종료 ──────────────────────
+    for (gg i = 0; i < 10; i++) {
+        the end : if i > 5;
+        print(f"i = {i}");
+    };
+
+    print("여기는 출력 안 됨 (the end로 이미 종료)");
+}

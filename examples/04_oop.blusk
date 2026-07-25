@@ -1,0 +1,48 @@
+// =====================================================
+//  04_oop.blusk  -  OOP + forkfrom 상속
+// =====================================================
+root package.examples.oop;
+
+import blusk26;
+import io;
+import oop;
+
+Blusk public class Animal {
+    gg name;
+    gg sound;
+
+    Animal(gg n, gg s) {
+        name  = n;
+        sound = s;
+    }
+
+    Blusk public void speak() {
+        print(f"{name} says {sound}!");
+    }
+}
+
+Blusk public class Dog : forkfrom Animal {
+    gg breed;
+
+    Dog(gg n, gg b) {
+        name  = n;
+        sound = "Woof";
+        breed = b;
+    }
+
+    Blusk public void info() {
+        print(f"{name} is a {breed}");
+    }
+}
+
+@entry
+Blusk public void main() {
+    gg dog = new Dog("Rex", "Labrador");
+    dog.speak();
+    dog.info();
+
+    gg cat = new Animal("Whiskers", "Meow");
+    cat.speak();
+
+    the end;
+}

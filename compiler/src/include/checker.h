@@ -1,8 +1,10 @@
 // =============================================================
 //  BLUSK checker.h  -  BluskChecker (단일 패스, 완전 구현)
+//  StoreFlag는 opcode.h에서 단일 정의 (재정의 버그 수정)
 // =============================================================
 #pragma once
 #include "ast.h"
+#include "opcode.h"   // StoreFlag 정의 위치 (단일 소스)
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -19,21 +21,6 @@ enum class Lifetime { UNKNOWN, STATIC, ESCAPES, CYCLIC_RISK };
 enum class OwnerState { OWNED, BORROWED, MUT_BORROWED, MOVED, FREED };
 
 // ------------------------------------------------------------------
-//  OP_STORE intVal 인코딩 (SVM, Compiler 공용)
-//
-//  0 = 일반 변수
-//  1 = 상수 (num 키워드)
-//  2 = rcSkip  (Checker 확정 — RC 생략)
-//  3 = 상수 + rcSkip
-// ------------------------------------------------------------------
-enum StoreFlag : int64_t {
-    STORE_NORMAL   = 0,
-    STORE_CONST    = 1,
-    STORE_RCSKIP   = 2,
-    STORE_CONST_RC = 3,
-};
-
-// ------------------------------------------------------------------
 //  변수 심볼 정보
 // ------------------------------------------------------------------
 struct VarInfo {
@@ -48,6 +35,11 @@ struct VarInfo {
     OwnerState  ownerState  = OwnerState::OWNED;
     int         refCount    = 0;
     std::string borrowedBy;
+
+    // ── 타입 시스템 (narrowing 경고용) ───────────────────────────
+    // "gg"/"num"/"int"/"long"/"float"/"double"/"str"/"bool" 등
+    // VAR_DECL 키워드 그대로 저장. 비어있으면 추론(gg)됨.
+    std::string declaredType;
 };
 
 // ------------------------------------------------------------------
@@ -63,6 +55,12 @@ struct CheckResult {
     std::unordered_set<std::string> deadVars;       // 미사용 → 컴파일 제외
     std::unordered_set<std::string> constVars;      // 상수 목록
     std::unordered_set<std::string> memProtected;   // @Newmemorycancel 보호 구역
+
+    // Declared type keyword per variable ("int"/"long"/"float"/"double"/
+    // "gg"/"num"/...). Used by the compiler to auto-cast arithmetic
+    // results back to the declared width on assignment, e.g.
+    // "int x = x + 1;" stays 32-bit instead of silently widening.
+    std::unordered_map<std::string, std::string> varTypes;
 };
 
 // ------------------------------------------------------------------
@@ -76,11 +74,7 @@ private:
     std::string filename;
     CheckResult result;
 
-    // ── 단일 플랫 변수 테이블 (scope id, name) ───────────────────
-    // scope 깊이는 scopeDepth로 추적, 변수는 scopeId_name 키로 저장
     int  scopeDepth = 0;
-    // varTable[name] = 현재 스코프에서 가장 가까운 VarInfo
-    // 스코프 스택: vector<unordered_map>
     std::vector<std::unordered_map<std::string, VarInfo>> scopeStack;
 
     // 참조 그래프 (순환 탐지)
@@ -96,7 +90,8 @@ private:
     void pushScope();
     void popScope(bool emitDeadWarnings = true);
     VarInfo* findVar(const std::string& name);
-    VarInfo& declareVar(const std::string& name, int line, bool isConst = false);
+    VarInfo& declareVar(const std::string& name, int line, bool isConst = false,
+                        const std::string& declaredType = "");
     void     markUsed(const std::string& name, int line = 0);
 
     // ── 단일 패스 분석 ────────────────────────────────────────────
@@ -105,8 +100,12 @@ private:
     // ── 표현식에서 사용되는 변수 수집 ────────────────────────────
     void collectUsages(ASTNode* node);
 
+    // ── 타입 폭 비교 (narrowing 경고용) ──────────────────────────
+    // 반환값: 0=동일/문제없음, 1=narrowing(정밀도 손실 가능), -1=타입불일치
+    static int typeWidthCompare(const std::string& fromType, const std::string& toType);
+
     // ── 수명 / RC 판단 ────────────────────────────────────────────
-    void finalizeScope();  // popScope 직전에 수명 결정
+    void finalizeScope();
 
     // ── 참조 그래프 ───────────────────────────────────────────────
     void addRefEdge(const std::string& from, ASTNode* rhs);

@@ -1,5 +1,5 @@
 // =============================================================
-//  BLUSK value.cpp  -  BluskMatrix + castTo 구현
+//  BLUSK value.cpp  -  int/long/float/double 정밀도 시스템 구현
 // =============================================================
 #include "../include/value.h"
 #include "../include/error.h"
@@ -10,7 +10,7 @@
 #include <numeric>
 
 // ──────────────────────────────────────────────────────────────────
-//  BluskMatrix 연산
+//  BluskMatrix 연산 (이전과 동일)
 // ──────────────────────────────────────────────────────────────────
 BluskMatrix BluskMatrix::matmul(const BluskMatrix& rhs) const {
     if (cols != rhs.rows) {
@@ -35,10 +35,7 @@ BluskMatrix BluskMatrix::add(const BluskMatrix& rhs) const {
 }
 
 BluskMatrix BluskMatrix::elmul(const BluskMatrix& rhs) const {
-    // element-wise (Hadamard)
-    // 두 벡터가 행 하나씩이면 element-wise
     if (rows!=rhs.rows||cols!=rhs.cols) {
-        // 크기 다르면 외적(outer product) 처리
         if (cols==rhs.cols) {
             BluskMatrix result(rows+rhs.rows, cols);
             for (size_t i=0;i<rows;i++) for(size_t j=0;j<cols;j++) result.at(i,j)=at(i,j);
@@ -115,7 +112,13 @@ std::string Value::toString() const {
     case VType::NIL:    return "nil";
     case VType::BOOL:   return num.b?"true":"false";
     case VType::INT:    return std::to_string(num.i);
-    case VType::FLOAT: { std::ostringstream oss; oss<<num.f; return oss.str(); }
+    case VType::FLOAT: {
+        std::ostringstream oss;
+        // float32는 정밀도를 낮춰 표시 (실제 저장은 double 슬롯이지만 절삭된 값)
+        if (numKind==NumKind::NK_FLOAT32) oss<<std::setprecision(7)<<(float)num.f;
+        else oss<<num.f;
+        return oss.str();
+    }
     case VType::STRING: return str;
     case VType::OBJECT: return obj?"[object "+obj->className+"]":"[null]";
     case VType::ARRAY:  return arr?"[array len="+std::to_string(arr->size())+"]":"[array]";
@@ -125,66 +128,130 @@ std::string Value::toString() const {
     }
 }
 
-// ── as 캐스팅 ────────────────────────────────────────────────────
-Value Value::castTo(const std::string& typeName) const {
-    if (typeName=="int"||typeName=="INT")      return Value::Int(toInt());
-    if (typeName=="float"||typeName=="FLOAT")  return Value::Float(toDouble());
-    if (typeName=="str"||typeName=="string")   return Value::String(toString());
-    if (typeName=="bool"||typeName=="BOOL")    return Value::Bool(toBool());
-    if (typeName=="double")                    return Value::Float(toDouble());
-    BluskError::report("Unknown cast type: "+typeName, "runtime", 0);
+// ── as 캐스팅: int/long/float/double/str/bool 전부 지원 ──────────
+Value Value::castTo(const std::string& tn) const {
+    if (tn=="int")            return Value::Int32(toInt());
+    if (tn=="long")           return Value::Int64(toInt());
+    if (tn=="float")          return Value::Float32(toDouble());
+    if (tn=="double")         return Value::Float64(toDouble());
+    if (tn=="str"||tn=="string") return Value::String(toString());
+    if (tn=="bool"||tn=="BOOL")  return Value::Bool(toBool());
+    BluskError::report("Unknown cast type: "+tn, "runtime", 0);
     return *this;
 }
 
 // ──────────────────────────────────────────────────────────────────
-//  산술 연산자
+//  NumKind 승격 규칙 (promote)
+//
+//  우선순위:  float64 > float32 > int64 > int32
+//  즉 더 넓은/실수 쪽이 이김. int와 float가 섞이면 항상 float 쪽으로.
+// ──────────────────────────────────────────────────────────────────
+NumKind Value::promote(NumKind a, NumKind b) {
+    auto rank = [](NumKind k)->int {
+        switch(k) {
+        case NumKind::NK_INT32:   return 0;
+        case NumKind::NK_INT64:   return 1;
+        case NumKind::NK_FLOAT32: return 2;
+        case NumKind::NK_FLOAT64: return 3;
+        default: return -1;
+        }
+    };
+    int ra=rank(a), rb=rank(b);
+    if (ra<0) return b;
+    if (rb<0) return a;
+    NumKind higher = (ra>=rb) ? a : b;
+
+    // 특이 케이스: int64 + float32 → float64로 승격 (int64 정밀도 보존 위해)
+    if ((a==NumKind::NK_INT64 && b==NumKind::NK_FLOAT32) ||
+        (b==NumKind::NK_INT64 && a==NumKind::NK_FLOAT32)) {
+        return NumKind::NK_FLOAT64;
+    }
+    return higher;
+}
+
+// 결과 NumKind에 맞춰 Value 생성하는 헬퍼
+static Value makeFromKind(NumKind k, double dv, int64_t iv) {
+    switch(k) {
+    case NumKind::NK_INT32:   return Value::Int32(iv);
+    case NumKind::NK_INT64:   return Value::Int64(iv);
+    case NumKind::NK_FLOAT32: return Value::Float32(dv);
+    case NumKind::NK_FLOAT64: return Value::Float64(dv);
+    default: return Value::Nil();
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────
+//  산술 연산자 (NumKind 승격 적용)
 // ──────────────────────────────────────────────────────────────────
 Value Value::operator+(const Value& o) const {
     if (type==VType::STRING||o.type==VType::STRING) return Value::String(toString()+o.toString());
     if (isMatrix()&&o.isMatrix()&&mat&&o.mat) return Value::Matrix(std::make_shared<BluskMatrix>(mat->add(*o.mat)));
-    if (type==VType::FLOAT||o.type==VType::FLOAT) return Value::Float(toDouble()+o.toDouble());
-    if (isNum()&&o.isNum()) return Value::Int(toInt()+o.toInt());
+    if (isNum()&&o.isNum()) {
+        NumKind rk = promote(numKind, o.numKind);
+        bool isF = (rk==NumKind::NK_FLOAT32||rk==NumKind::NK_FLOAT64);
+        if (isF) return makeFromKind(rk, toDouble()+o.toDouble(), 0);
+        return makeFromKind(rk, 0, toInt()+o.toInt());
+    }
     return Value::Nil();
 }
 Value Value::operator-(const Value& o) const {
-    if (type==VType::FLOAT||o.type==VType::FLOAT) return Value::Float(toDouble()-o.toDouble());
-    if (isNum()&&o.isNum()) return Value::Int(toInt()-o.toInt());
+    if (isNum()&&o.isNum()) {
+        NumKind rk = promote(numKind, o.numKind);
+        bool isF = (rk==NumKind::NK_FLOAT32||rk==NumKind::NK_FLOAT64);
+        if (isF) return makeFromKind(rk, toDouble()-o.toDouble(), 0);
+        return makeFromKind(rk, 0, toInt()-o.toInt());
+    }
     return Value::Nil();
 }
 Value Value::operator*(const Value& o) const {
-    // Matrix * Matrix = 행렬 곱
     if (isMatrix()&&o.isMatrix()&&mat&&o.mat) return Value::Matrix(std::make_shared<BluskMatrix>(mat->matmul(*o.mat)));
-    if (type==VType::FLOAT||o.type==VType::FLOAT) return Value::Float(toDouble()*o.toDouble());
-    if (isNum()&&o.isNum()) return Value::Int(toInt()*o.toInt());
+    if (isNum()&&o.isNum()) {
+        NumKind rk = promote(numKind, o.numKind);
+        bool isF = (rk==NumKind::NK_FLOAT32||rk==NumKind::NK_FLOAT64);
+        if (isF) return makeFromKind(rk, toDouble()*o.toDouble(), 0);
+        return makeFromKind(rk, 0, toInt()*o.toInt());
+    }
     return Value::Nil();
 }
 Value Value::operator/(const Value& o) const {
-    if (type==VType::FLOAT||o.type==VType::FLOAT) {
-        double d=o.toDouble(); if(d==0.0){BluskError::report("Division by zero","runtime",0);return Value::Nil();}
-        return Value::Float(toDouble()/d);
-    }
     if (isNum()&&o.isNum()) {
-        int64_t d=o.toInt(); if(d==0){BluskError::report("Division by zero","runtime",0);return Value::Nil();}
-        return Value::Int(toInt()/d);
+        NumKind rk = promote(numKind, o.numKind);
+        bool isF = (rk==NumKind::NK_FLOAT32||rk==NumKind::NK_FLOAT64);
+        if (isF) {
+            double d=o.toDouble();
+            if(d==0.0){BluskError::report("Division by zero","runtime",0);return Value::Nil();}
+            return makeFromKind(rk, toDouble()/d, 0);
+        }
+        int64_t d=o.toInt();
+        if(d==0){BluskError::report("Division by zero","runtime",0);return Value::Nil();}
+        return makeFromKind(rk, 0, toInt()/d);
     }
     return Value::Nil();
 }
 Value Value::operator%(const Value& o) const {
     if (isNum()&&o.isNum()) {
-        int64_t d=o.toInt(); if(d==0){BluskError::report("Modulo by zero","runtime",0);return Value::Nil();}
-        return Value::Int(toInt()%d);
+        int64_t d=o.toInt();
+        if(d==0){BluskError::report("Modulo by zero","runtime",0);return Value::Nil();}
+        NumKind rk = promote(numKind, o.numKind);
+        return makeFromKind(rk, 0, toInt()%d);
     }
     return Value::Nil();
 }
-Value Value::blusk_pow(const Value& o) const { return Value::Float(std::pow(toDouble(),o.toDouble())); }
+Value Value::blusk_pow(const Value& o) const {
+    // pow는 항상 실수 결과 (BLUSK 기존 동작 유지) — 더 넓은 float 쪽으로
+    NumKind rk = (numKind==NumKind::NK_FLOAT32 || o.numKind==NumKind::NK_FLOAT32)
+                 ? NumKind::NK_FLOAT32 : NumKind::NK_FLOAT64;
+    if (isFloat64()||o.isFloat64()) rk = NumKind::NK_FLOAT64;
+    return makeFromKind(rk, std::pow(toDouble(), o.toDouble()), 0);
+}
 Value Value::operator-() const {
-    if(type==VType::INT)   return Value::Int(-num.i);
-    if(type==VType::FLOAT) return Value::Float(-num.f);
+    if(type==VType::INT)   return makeFromKind(numKind, 0, -num.i);
+    if(type==VType::FLOAT) return makeFromKind(numKind, -num.f, 0);
     return Value::Nil();
 }
 
 // ──────────────────────────────────────────────────────────────────
-//  Tensor 연산
+//  Tensor 연산 (이전과 동일)
 // ──────────────────────────────────────────────────────────────────
 Value Value::tensorAdd(const Value& o) const {
     if(!tensor||!o.tensor) return Value::Nil();

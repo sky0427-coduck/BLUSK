@@ -1,0 +1,38 @@
+// =====================================================
+//  01_hello.blusk  -  BLUSK 첫 번째 예제
+// =====================================================
+import blusk26;
+import io;
+
+@entry
+Blusk public void main() {
+    print("Hello, BLUSK!");
+
+    // 변수
+    gg name = "World";
+    print(f"Hello, {name}!");
+
+    // 조건
+    gg a = 5;
+    if (a == 5) {
+        print("five!");
+    } elseif (a > 5) {
+        print("big!");
+    } else {
+        print("small!");
+    };
+
+    // for 루프
+    for (gg i = 0; i < 3; i++) {
+        print("%d", i);
+    };
+
+    // while
+    gg x = 0;
+    while (x < 3) {
+        print(f"x = {x}");
+        x = x + 1;
+    };
+
+    the end;
+}

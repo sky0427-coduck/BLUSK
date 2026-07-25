@@ -1,0 +1,33 @@
+// =====================================================
+//  08_annotations.blusk  -  @native / @unsafe / @Newmemorycancel
+// =====================================================
+root package.examples.lowlevel;
+
+import blusk26;
+import io;
+
+// @native — LLVM AOT 컴파일 대상 (1.0 목표, 현재는 SVM fallback)
+@native
+Blusk public gg fastAdd(gg a, gg b) {
+    the end : return a + b;
+}
+
+// @Newmemorycancel — 메모리 보호 구역 (Checker가 쓰기 차단)
+@Newmemorycancel
+gg protectedBuffer = 0;
+
+// @unsafe — 저수준 접근 허용 (1.0 목표, 현재는 마킹만)
+@unsafe
+Blusk public void lowLevelOp() {
+    print("Low-level operation (stub, 1.0 target)");
+}
+
+@entry
+Blusk public void main() {
+    gg result = fastAdd(10, 20);
+    print(f"fastAdd(10, 20) = {result}");
+    print(f"protectedBuffer = {protectedBuffer}");
+    lowLevelOp();
+
+    the end;
+}
