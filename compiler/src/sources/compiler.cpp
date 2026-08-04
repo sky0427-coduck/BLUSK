@@ -1,5 +1,6 @@
 // =============================================================
 //  BLUSK compiler.cpp  -  PRINT_EXPR, loop(count,interval) patched
+//  + deferred break/continue patching (fixes infinite loops)
 // =============================================================
 #include "../include/compiler.h"
 #include "../include/error.h"
@@ -196,13 +197,12 @@ void Compiler::compileNode(ASTNode* node) {
     if(t=="THE_END_IF")     {uint8_t mk=ra.current();uint8_t cr=compileCond(node->children.empty()?nullptr:node->children[0]);emit(OP_HALT_IF,0,cr);ra.resetTo(mk);return;}
     if(t=="THE_END_RETURN"||t=="RETURN"){uint8_t mk=ra.current();uint8_t vr=node->children.empty()?ra.alloc():compileExpr(node->children[0]);emit(OP_RETURN,0,vr);ra.resetTo(mk);return;}
     // break/continue compile directly to OP_JUMP using the enclosing
-    // loop's LoopContext. "continue" jumps straight to the loop's
-    // increment/recheck point; "break" emits a JUMP that gets patched
-    // once the loop's end PC is known. This replaces an earlier "find
-    // the nearest JUMP at runtime" approach that broke as soon as
-    // break/continue appeared inside a nested if/switch -- the runtime
-    // scan would grab whatever JUMP happened to come next (e.g. an
-    // if-statement's own exit jump) instead of the loop's actual exit.
+    // loop's LoopContext. Both are *deferred* patches: the JUMP target
+    // isn't known yet at the point the statement is compiled (walking
+    // the loop body, before the increment/exit point exist in the
+    // bytecode), so a placeholder JUMP is emitted and its index recorded;
+    // the loop's own compilation later patches it once the real target
+    // (increment start for continue, past-loop-end for break) is known.
     if(t=="BREAK") {
         if (!loopStack.empty()) {
             size_t idx = bytecode.size();
@@ -215,7 +215,9 @@ void Compiler::compileNode(ASTNode* node) {
     }
     if(t=="CONTINUE") {
         if (!loopStack.empty()) {
-            emit(OP_JUMP, 0, 0, 0, "", (int64_t)loopStack.back().continueTarget);
+            size_t idx = bytecode.size();
+            emit(OP_JUMP, 0, 0, 0, "", 0);
+            loopStack.back().continuePatches.push_back(idx);
         } else {
             emit(OP_CONTINUE);
         }
@@ -347,12 +349,15 @@ void Compiler::compileNode(ASTNode* node) {
         uint8_t elemReg=ra.alloc(); emit(OP_ARRAY_GET,elemReg,elemIdx,0,arrNm);
         emit(OP_STORE,0,elemReg,0,varNm,STORE_RCSKIP);
 
-        // "continue" must land on the increment step below, not the
-        // condition recheck at loopStart, so the index still advances.
+        // continue jumps land here -- the increment's real start PC,
+        // now knowable since the body has fully compiled.
         loopStack.push_back(LoopContext{});
-        loopStack.back().continueTarget = bytecode.size();
 
         compileNode(node->children[2]);
+
+        size_t incrementStart = bytecode.size();
+        for (size_t patchIdx : loopStack.back().continuePatches)
+            bytecode[patchIdx].intVal = (int64_t)incrementStart;
 
         uint8_t iCur=ra.alloc(); emit(OP_LOAD,iCur,0,0,"__forin_i__"+arrNm);
         uint8_t one=ra.alloc();  emit(OP_LOAD_INT,one,0,0,"",1);
@@ -474,15 +479,19 @@ void Compiler::compileNode(ASTNode* node) {
         uint8_t cr=compileCond(node->children[1]);size_t jo=bytecode.size();emit(OP_JUMP_IFNOT,0,cr,0,"",0);
         ra.resetTo(mk);
 
-        // "continue" must land on the step (increment) below, not the
-        // condition check at ls, so the loop variable still advances.
-        // Body and step are emitted back-to-back with nothing in between,
-        // so bytecode.size() right now is exactly where the step will
-        // start once the body finishes compiling.
         loopStack.push_back(LoopContext{});
-        loopStack.back().continueTarget = bytecode.size();
 
         compileNode(node->children[3]);
+
+        // continue jumps land here -- the increment's real start PC,
+        // now knowable since the body has fully compiled. Patching here
+        // (rather than pre-computing before the body) is what makes this
+        // correct: any "continue" compiled partway through the body had
+        // no way to know this address yet, so it emitted a placeholder
+        // JUMP now filled in.
+        size_t incrementStart = bytecode.size();
+        for (size_t patchIdx : loopStack.back().continuePatches)
+            bytecode[patchIdx].intVal = (int64_t)incrementStart;
 
         ASTNode* step=node->children[2];
         uint8_t sv=ra.alloc();emit(OP_LOAD,sv,0,0,step->value);
@@ -503,13 +512,16 @@ void Compiler::compileNode(ASTNode* node) {
         uint8_t cr=compileCond(node->children[0]);size_t jo=bytecode.size();emit(OP_JUMP_IFNOT,0,cr,0,"",0);
         ra.resetTo(mk);
 
-        // "continue" jumps straight back to the condition recheck -- a
-        // while loop has no separate increment step, so ls is the
-        // correct continue target.
         loopStack.push_back(LoopContext{});
-        loopStack.back().continueTarget = ls;
 
         compileNode(node->children[1]);
+
+        // continue jumps straight back to the condition recheck -- a
+        // while loop has no separate increment step, so ls is the
+        // correct continue target.
+        for (size_t patchIdx : loopStack.back().continuePatches)
+            bytecode[patchIdx].intVal = (int64_t)ls;
+
         emit(OP_JUMP,0,0,0,"",(int64_t)ls);bytecode[jo].intVal=(int64_t)bytecode.size();
 
         for (size_t patchIdx : loopStack.back().breakPatches)
@@ -547,12 +559,15 @@ void Compiler::compileNode(ASTNode* node) {
             size_t jo = bytecode.size(); emit(OP_JUMP_IFNOT, 0, cr, 0, "", 0);
             ra.resetTo(mk);
 
-            // "continue" must land on the increment step below, not the
-            // condition recheck at loopStart, so the counter still advances.
             loopStack.push_back(LoopContext{});
-            loopStack.back().continueTarget = bytecode.size();
 
             if (blk) compileNode(blk); else if (!node->children.empty()) compileNode(node->children[0]);
+
+            // continue jumps land here -- right where the per-iteration
+            // sleep + increment begins, now that the body has compiled.
+            size_t incrementStart = bytecode.size();
+            for (size_t patchIdx : loopStack.back().continuePatches)
+                bytecode[patchIdx].intVal = (int64_t)incrementStart;
 
             if (intervalMs > 0) {
                 uint8_t sv = ra.alloc(); emit(OP_LOAD_INT, sv, 0, 0, "", intervalMs);
@@ -578,8 +593,10 @@ void Compiler::compileNode(ASTNode* node) {
         // No count given -- fall back to unconditional repeat (legacy)
         loopStack.push_back(LoopContext{});
         size_t ls=bytecode.size();
-        loopStack.back().continueTarget = ls;
         if(blk)compileNode(blk);else if(!node->children.empty())compileNode(node->children[0]);
+        // continue in an unconditional loop just jumps back to the top.
+        for (size_t patchIdx : loopStack.back().continuePatches)
+            bytecode[patchIdx].intVal = (int64_t)ls;
         emit(OP_JUMP,0,0,0,"",(int64_t)ls);
         for (size_t patchIdx : loopStack.back().breakPatches)
             bytecode[patchIdx].intVal = (int64_t)bytecode.size();

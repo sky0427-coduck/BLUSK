@@ -19,6 +19,15 @@ void BluskGC::trackObject(BluskObject* obj) {
 }
 
 // ──────────────────────────────────────────────────────────────────
+//  이미 추적 중인지 조회
+// ──────────────────────────────────────────────────────────────────
+bool BluskGC::isTracked(BluskObject* obj) const {
+    if (!obj) return false;
+    std::lock_guard<std::mutex> lock(mtx_);
+    return liveSet_.count(obj) > 0;
+}
+
+// ──────────────────────────────────────────────────────────────────
 //  RC 증가
 // ──────────────────────────────────────────────────────────────────
 void BluskGC::incRef(BluskObject* obj) {

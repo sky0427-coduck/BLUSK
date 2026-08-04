@@ -3,6 +3,7 @@
 // =============================================================
 #include "../include/repl.h"
 #include "../include/debug.h"
+#include "../include/gc.h"
 #include "../include/error.h"
 #include <iostream>
 #include <sstream>
@@ -81,6 +82,18 @@ bool ReplSession::evalSource(const std::string& src) {
     // 3. Checker (경고만, 에러 시 계속 진행)
     CheckResult cr = checker_.check(root, "<repl>");
     // REPL에서는 에러가 있어도 최대한 실행 시도
+
+    // Each REPL line is checked/compiled as its own complete, isolated
+    // program (see wrapSource() below), so the Checker never sees the
+    // *next* line that will actually use a variable declared *this*
+    // line -- it always looks unused from where the Checker is standing,
+    // gets marked dead, and the compiler skips its STORE entirely. That
+    // breaks the one thing a REPL is for: declaring something now and
+    // referencing it later. Dead-code elimination only makes sense with
+    // whole-program visibility, which the REPL's line-at-a-time model
+    // doesn't have, so it's disabled here specifically (other Checker
+    // output -- warnings, rcSkip, constVars -- still applies normally).
+    cr.deadVars.clear();
 
     // 4. Compile
     compiler_.setCheckerResult(cr);

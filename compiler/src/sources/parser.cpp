@@ -1,5 +1,6 @@
 // =============================================================
 //  BLUSK parser.cpp  -  switch/print(expr)/loop(count,interval) 패치 완료
+//  + io.read() token-consumption fix (see parseIORead)
 // =============================================================
 #include "../include/parser.h"
 #include "../include/error.h"
@@ -226,7 +227,7 @@ ASTNode* Parser::parseStatement() {
     if(isTypeKeyword(t))
         {return peek(1).value=="["?parseArrayDecl(t.value):parseVarDecl(t.value);}
     if(t.value=="task"&&peek(1).value=="."&&peek(2).value=="sleep") return parseTaskSleep();
-    if(t.value=="io"&&peek(1).value=="."&&peek(2).value=="read") {advance();advance();return parseIORead();}
+    if(t.value=="io"&&peek(1).value=="."&&peek(2).value=="read") return parseIORead();
 
     if(t.type==TOKEN_IDENTIFIER) {
         std::string name=t.value;
@@ -545,8 +546,18 @@ ASTNode* Parser::parseTaskSleep() {
     n->value=peek().value;advance();eatVal(")");skipSemicolon();return n;
 }
 
+// io.read("prompt", com target)
+// Previously the outer dispatcher pre-consumed "io" and "." before
+// jumping here, but this function itself went straight to eatVal("(")
+// without consuming the remaining "read" token -- leaving it unconsumed
+// and desyncing everything after it (the prompt string, the target
+// variable name, and the closing tokens all got misread as garbage,
+// spilling into whatever statement came next). Now this function
+// consumes "io", ".", and "read" itself, matching the pattern used by
+// parseTaskSleep(), and the dispatcher no longer pre-advances.
 ASTNode* Parser::parseIORead() {
-    ASTNode* n=new ASTNode();n->type="IO_READ";n->line=peek().line;eatVal("(");
+    ASTNode* n=new ASTNode();n->type="IO_READ";n->line=peek().line;
+    advance();eatVal(".");eatVal("read");eatVal("(");
     if(peek().type==TOKEN_STRING){n->value=peek().value;advance();}
     eatVal(",");eatVal("com");
     ASTNode* v=new ASTNode();v->type="READ_TARGET";v->value=peek().value;advance();
@@ -647,6 +658,20 @@ ASTNode* Parser::parseExprUnary() {
 
 ASTNode* Parser::parseExprPrimary() {
     Token t=peek();
+    if(t.type==TOKEN_KW_NEW) {
+        advance();
+        ASTNode* ne=new ASTNode();ne->type="NEW_EXPR";ne->value=peek().value;advance();
+        eatVal("(");
+        while(!checkVal(")")&&peek().type!=TOKEN_EOF){
+            ASTNode* a;
+            if(peek().type==TOKEN_FSTRING){a=new ASTNode();a->type="FSTRING_ARG";a->value=peek().value;advance();}
+            else if(peek().type==TOKEN_STRING){a=new ASTNode();a->type="STRING_ARG";a->value=peek().value;advance();}
+            else a=parseExpr();
+            ne->children.push_back(a);if(!eatVal(","))break;
+        }
+        eatVal(")");
+        return ne;
+    }
     if(checkVal("(")) {advance();ASTNode* inner=parseExpr();eatVal(")");
         if(peek().type==TOKEN_KW_AS) {
             advance();

@@ -40,6 +40,13 @@ public:
     // ── 객체 등록 (new 시 호출) ───────────────────────────────────
     void trackObject(BluskObject* obj);
 
+    // ── 이미 추적 중인 객체인지 조회 ─────────────────────────────
+    // Lets a caller distinguish "this object has never been bound to any
+    // variable yet" (needs trackObject, refCount starts at 1) from "this
+    // object is already owned somewhere else" (needs incRef instead --
+    // trackObject would wrongly reset its refCount back to 1).
+    bool isTracked(BluskObject* obj) const;
+
     // ── RC 증가 ──────────────────────────────────────────────────
     void incRef(BluskObject* obj);
 
@@ -67,7 +74,7 @@ private:
     // Cycle GC 후보 (rc > 0 이지만 외부 루트 없는 것)
     std::vector<BluskObject*> candidates_;
 
-    std::mutex mtx_;
+    std::mutex mutable mtx_;
     GCStats    stats_;
 
     // ── Trial Deletion 단계들 ────────────────────────────────────

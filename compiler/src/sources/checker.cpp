@@ -7,6 +7,7 @@
 #include "../include/error.h"
 #include <iostream>
 #include <algorithm>
+#include <cctype>
 
 // ── Type width comparison ────────────────────────────────────────
 // rank: int(0) < long(1) < float(2) < double(3)
@@ -25,6 +26,24 @@ int BluskChecker::typeWidthCompare(const std::string& fromType, const std::strin
     if (rf == -100 || rt == -100) return 0;
     if (rf <= rt) return 0;
     return 1;
+}
+
+// ── 내장 네임스페이스 사전 스캔 ───────────────────────────────────
+// "task" is always reserved -- task.sleep(...) is parsed unconditionally,
+// with no import required. The rest depend on which imports are present.
+void BluskChecker::scanReservedNamespaces(ASTNode* root) {
+    reservedNamespaces.clear();
+    reservedNamespaces.insert("task");
+    if (!root) return;
+    for (auto* c : root->children) {
+        if (!c || c->type != "IMPORT") continue;
+        const std::string& v = c->value;
+        if (v == "io")                    reservedNamespaces.insert("io");
+        else if (v == "Blusk.num.Math")   reservedNamespaces.insert("Math");
+        else if (v == "string")           reservedNamespaces.insert("string");
+        else if (v == "time")             reservedNamespaces.insert("time");
+        else if (v == "collections")      reservedNamespaces.insert("collections");
+    }
 }
 
 // ── Scope management ──────────────────────────────────────────────
@@ -63,6 +82,11 @@ VarInfo* BluskChecker::findVar(const std::string& name) {
 VarInfo& BluskChecker::declareVar(const std::string& name, int line, bool isConst,
                                    const std::string& declaredType) {
     if (scopeStack.empty()) pushScope();
+    if (reservedNamespaces.count(name)) {
+        warn("Variable '" + name + "' shadows the built-in '" + name +
+             "' namespace -- " + name + ".xxx(...) calls elsewhere in this "
+             "file will stop working. Consider renaming this variable.", line);
+    }
     VarInfo info;
     info.name        = name;
     info.declLine    = line;
@@ -209,6 +233,32 @@ void BluskChecker::analyze(ASTNode* node) {
         return;
     }
     if (t == "PRINT") {
+        // print("fmt", arg) parses its second argument as a PRINT_ARG /
+        // ARRAY_SIZE / ARRAY_GET node carrying the variable name in
+        // ->value directly (not as a VAR_REF child), so plain
+        // collectUsages() never sees it. Mark it used explicitly here,
+        // or the compiler treats the variable as dead and skips its
+        // STORE entirely -- causing a runtime "Undefined variable" crash
+        // even though the variable is genuinely used in this print call.
+        for (auto* c : node->children) {
+            if (c->type == "PRINT_ARG" || c->type == "ARRAY_SIZE") {
+                markUsed(c->value, node->line);
+            } else if (c->type == "ARRAY_GET") {
+                markUsed(c->value, node->line);
+            }
+            collectUsages(c);
+        }
+        return;
+    }
+
+    // THE_END_IF / THE_END_RETURN / RETURN : their condition/return
+    // expression must go through collectUsages(), not the generic
+    // child-recursion below -- analyze() itself never marks VAR_REF used,
+    // only collectUsages() does. Without this, any variable referenced
+    // only inside "the end : if (...)" or "the end : return ..." gets
+    // marked dead, its STORE skipped by the compiler, and the program
+    // crashes at runtime the instant that line runs.
+    if (t == "THE_END_IF" || t == "THE_END_RETURN" || t == "RETURN") {
         for (auto* c : node->children) collectUsages(c);
         return;
     }
@@ -259,7 +309,18 @@ void BluskChecker::analyze(ASTNode* node) {
         return;
     }
 
-    // ── CLASS_DECL : member variable tracking (simplified for now) ──
+    // METHOD_CALL statements (obj.method(args);) store the object name
+    // directly in ->value rather than as a VAR_REF child, so the generic
+    // recursion below would never see it as a "usage" -- the object gets
+    // marked dead, its STORE gets skipped by the compiler, and the whole
+    // call silently becomes a no-op (no error, just nothing happens).
+    if (t == "METHOD_CALL") {
+        markUsed(v, node->line);
+        for (auto* c : node->children) analyze(c);
+        return;
+    }
+
+    // CLASS_DECL : member variable tracking (simplified for now) ──
     if (t == "CLASS_DECL") {
         for (auto* c : node->children) analyze(c);
         return;
@@ -274,6 +335,23 @@ void BluskChecker::collectUsages(ASTNode* node) {
     if (!node) return;
     if (node->type == "VAR_REF") {
         markUsed(node->value, node->line);
+    }
+    if (node->type == "METHOD_CALL_EXPR") {
+        // ->value is "obj.method" concatenated together; the object part
+        // is the actual variable usage.
+        size_t dot = node->value.find('.');
+        if (dot != std::string::npos) markUsed(node->value.substr(0, dot), node->line);
+    }
+    if (node->type == "COND_LEFT" || node->type == "COND_RIGHT") {
+        // C-style for-loop conditions ("k <= n") are parsed token-by-token
+        // into a flat 3-child CONDITION (COND_LEFT, COND_OP, COND_RIGHT)
+        // rather than through the full expression parser, so operand
+        // names live directly in ->value instead of as VAR_REF children.
+        const std::string& val = node->value;
+        bool isNumeric = !val.empty() &&
+            (std::isdigit((unsigned char)val[0]) || (val[0]=='-' && val.size()>1));
+        if (!isNumeric && val!="true" && val!="false" && val!="nil")
+            markUsed(val, node->line);
     }
     for (auto* c : node->children) collectUsages(c);
 }
@@ -299,6 +377,8 @@ CheckResult BluskChecker::check(ASTNode* root, const std::string& fn) {
     scopeDepth = 0;
 
     std::cerr << "[Checker] Analyzing: " << filename << "\n";
+
+    scanReservedNamespaces(root);
 
     pushScope();
     analyze(root);

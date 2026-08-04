@@ -1,6 +1,12 @@
 // =============================================================
 //  BLUSK lexer.cpp  -  long/int/float/double/bool/str 추가
-//  (checkVal 미선언 버그 수정: suffix 검사를 peek/peekAt만으로 처리)
+//  identifier()는 더 이상 '.'을 병합하지 않음 -- 그 병합 로직은
+//  "Blusk.num.Math" 같은 import 경로를 한 토큰으로 만들려던 것이었지만,
+//  Math.sqrt(), dog.speak(), task.sleep(), io.read() 등 언어 전체의
+//  일반적인 dot 문법까지 전부 하나의 토큰으로 삼켜버려서 그 뒤의 파서
+//  체크(별도의 "." 토큰을 기대하는)가 전부 실패하는 결과를 낳았음.
+//  import/root package 파싱은 이미 개별 IDENTIFIER + "." 토큰을 이어
+//  붙이는 방식이라 이 병합이 애초에 필요하지 않았음.
 // =============================================================
 #include "../include/lexer.h"
 #include <cctype>
@@ -42,8 +48,7 @@ TokenType Lexer::classifyKeyword(const std::string& s) {
 
 Token Lexer::identifier() {
     std::string val; int sl=line;
-    while (std::isalnum(peek())||peek()=='_'||peek()=='.') {
-        if (peek()=='.') { if (!std::isalpha(peekAt(1))&&peekAt(1)!='_') break; }
+    while (std::isalnum(peek())||peek()=='_') {
         val+=peek(); advance();
     }
     return { classifyKeyword(val), val, sl };

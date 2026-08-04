@@ -1,5 +1,6 @@
 // =============================================================
 //  BLUSK vm.cpp  -  SVM 완전판 (AI 제거 / Matrix AVX2 유지)
+//  + runBlock() now handles PRINT_FSTR (OOP method-body f-string print)
 // =============================================================
 #include "../include/vm.h"
 #include "../include/checker.h"
@@ -140,6 +141,27 @@ void SVM::runBlock(ASTNode* body,BluskObject& obj,
                 std::cout<<res<<"\n";
             }
         }
+        else if(s->type=="PRINT_FSTR"){
+            // Method bodies (constructors/methods) run through this
+            // separate tree-walking interpreter rather than the main
+            // Register VM, and until this fix it only understood the
+            // old-style PRINT node -- f-string prints inside a method
+            // (print(f"{name} says {sound}!");, the idiomatic OOP form
+            // used throughout the examples) silently produced no output
+            // at all, with no error to explain why.
+            const std::string& tmpl=s->value;
+            std::string res;
+            for(size_t i=0;i<tmpl.size();i++){
+                if(tmpl[i]=='{'){
+                    size_t e=tmpl.find('}',i+1);
+                    if(e==std::string::npos){res+='{';continue;}
+                    std::string varName=tmpl.substr(i+1,e-i-1);
+                    res+=resolveVal(varName,local,obj,globals).toString();
+                    i=e;
+                } else res+=tmpl[i];
+            }
+            std::cout<<res<<"\n";
+        }
         else if(s->type=="VAR_DECL"&&!s->children.empty()){
             auto* nn=s->children[0];
             if(!nn->children.empty()){
@@ -270,7 +292,27 @@ void SVM::run(const std::vector<Instruction>& bc){
                 {BluskError::report("Cannot reassign constant '"+I.strVal+"'","runtime",0);break;}
             Value val=regs[I.src1];
             if(rcS){val.rcSkip=true;if(val.isObj()&&val.obj)val.obj->rcSkip=true;}
-            if(!rcS&&val.isObj()&&val.obj) GC_TRACK(val.obj.get());
+
+            // Real RC: this variable slot is about to stop pointing at
+            // whatever it used to hold, and start pointing at `val`.
+            // Release the old binding (unless it's the very same object,
+            // e.g. "x = x;", or nothing was bound here before), then
+            // establish the new one -- as a first-ever tracking if no
+            // other variable already owns this object, or as an
+            // additional reference (incRef) if one does. Skipped
+            // entirely for rcSkip values, per the Checker's proof that
+            // this variable's lifetime never needs RC bookkeeping.
+            if(!rcS){
+                auto oldIt=globals.find(I.strVal);
+                if(oldIt!=globals.end() && oldIt->second.isObj() && oldIt->second.obj
+                   && !oldIt->second.rcSkip
+                   && oldIt->second.obj.get()!=val.obj.get())
+                    GC_DECREF(oldIt->second.obj.get());
+                if(val.isObj()&&val.obj){
+                    if(BluskGC::instance().isTracked(val.obj.get())) GC_INCREF(val.obj.get());
+                    else                                              GC_TRACK(val.obj.get());
+                }
+            }
             globals[I.strVal]=val;
             if(isC) constants[I.strVal]=true;
             break;
@@ -339,7 +381,10 @@ void SVM::run(const std::vector<Instruction>& bc){
             auto obj=std::make_shared<BluskObject>(); obj->className=I.strVal;
             std::vector<Value> args;
             for(int j=0;j<(int)I.intVal;j++) args.push_back(regs[I.src1+j]);
-            runConstructor(I.strVal,*obj,args); GC_TRACK(obj.get());
+            runConstructor(I.strVal,*obj,args);
+            // Tracking is deferred to whichever OP_STORE first binds this
+            // object to a variable (see OP_STORE) -- tracking it here too
+            // would double-count it right as that STORE runs.
             regs[I.dst]=Value::Object(obj); break;
         }
         case OP_CALL: {

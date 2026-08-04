@@ -94,6 +94,18 @@ private:
                         const std::string& declaredType = "");
     void     markUsed(const std::string& name, int line = 0);
 
+    // ── 내장 네임스페이스 사전 스캔 ───────────────────────────────
+    // Runs once, before the main analyze() pass, over the top-level
+    // IMPORT nodes. Populates reservedNamespaces with the bare
+    // identifiers ("Math", "io", "string", "time", "collections") that
+    // the parser treats specially when followed by "." -- e.g. "Math"
+    // immediately before "." triggers Math-call parsing regardless of
+    // whether the user has also declared a variable named "Math". This
+    // lets declareVar() warn about the shadowing before it silently
+    // breaks those built-in calls elsewhere in the file.
+    std::unordered_set<std::string> reservedNamespaces;
+    void scanReservedNamespaces(ASTNode* root);
+
     // ── 단일 패스 분석 ────────────────────────────────────────────
     void analyze(ASTNode* node);
 

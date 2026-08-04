@@ -3,9 +3,9 @@
 //  Includes: constTable (zero-cost num inlining), varTypes-based
 //  auto-cast on assignment (keeps int/long/float/double widths
 //  correct through arithmetic promotion), and LoopContext stack
-//  for compiling break/continue directly to OP_JUMP (no runtime
-//  "find the nearest JUMP" guessing, which breaks inside nested
-//  if/switch blocks).
+//  for compiling break/continue directly to OP_JUMP via deferred
+//  patching (fixes infinite loops when continue/break appear
+//  inside nested if/switch blocks).
 // =============================================================
 #pragma once
 #include "ast.h"
@@ -28,15 +28,17 @@ public:
 };
 
 // Tracks the patch points for break/continue inside the loop currently
-// being compiled. continueTarget is the PC where the loop's
-// increment/condition-recheck step begins -- known immediately since
-// nothing else is emitted between the body and the step. breakPatches
-// holds the bytecode indices of JUMP instructions emitted for "break"
-// statements; these get patched to point past the loop once its end PC
-// is known, after the body finishes compiling.
+// being compiled. Both breakPatches and continuePatches are *deferred*
+// patch lists: the JUMP target isn't known yet at the point a break/continue
+// statement is compiled (it's compiled while walking the loop body, before
+// the increment step or the loop's exit point even exist in the bytecode
+// yet), so each JUMP is emitted with a placeholder target and its index is
+// recorded here. Once the real location is known -- the increment step's
+// start PC for continuePatches, the address just past the loop for
+// breakPatches -- every recorded JUMP gets patched to point there.
 struct LoopContext {
-    size_t continueTarget = 0;
     std::vector<size_t> breakPatches;
+    std::vector<size_t> continuePatches;
 };
 
 class Compiler {
