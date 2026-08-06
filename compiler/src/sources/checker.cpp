@@ -2,6 +2,11 @@
 //  BLUSK checker.cpp  -  single-pass analysis + narrowing warnings
 //  + SWITCH/MATRIX_DECL/SIMD_FOR dedicated handling
 //  + f-string {var} usage tracking (prevents false dead-code elimination)
+//  + constant folding (Checker precomputes constant expressions and
+//    hands the result to the Compiler, which emits a single LOAD
+//    instead of regenerating the ADD/MUL/etc. instructions)
+//  + real escape-analysis RC-skip (single-owner "new Thing()" bindings
+//    that never alias/escape skip all GC bookkeeping entirely)
 // =============================================================
 #include "../include/checker.h"
 #include "../include/error.h"
@@ -168,6 +173,39 @@ void BluskChecker::analyze(ASTNode* node) {
             collectUsages(rhs);
             addRefEdge(name, rhs);
 
+            // Try to fully evaluate the initializer now, e.g. "2 + 3" ->
+            // 5, so the Compiler can emit a single LOAD instead of the
+            // ADD instruction (and everything it depends on) every run.
+            Value folded;
+            if (tryFold(rhs, folded)) result.foldedConsts[rhs] = folded;
+
+            // Escape analysis for RC-skip (see markSubtreeEscaped/
+            // finalizeRcSkipCandidates): a fresh "new Thing()" binding
+            // is a single-owner candidate. Its own constructor arguments
+            // are a different story -- handing an existing variable into
+            // a new object's fields means that variable itself no
+            // longer has a single, provable owner.
+            if (rhs->type == "NEW_EXPR") {
+                objectCandidates_.insert(name);
+                for (auto* arg : rhs->children) markSubtreeEscaped(arg);
+            } else if (rhs->type == "VAR_REF") {
+                // Aliasing: "gg b = a;" -- both names now reference the
+                // same object, so neither can ever be treated as sole
+                // owner again. This is whole-program, per-name analysis
+                // (not per-SSA-binding), so there's no way to later
+                // distinguish "b before this alias" from "b after" --
+                // once a name has EVER shared an object with another
+                // name, marking just one side as escaped would let a
+                // later, unrelated store through the other name mark
+                // the *shared object itself* rcSkip (BluskObject::rcSkip
+                // is a field on the object, not the variable), silently
+                // breaking the first name's RC too.
+                markEscaped(rhs->value);
+                markEscaped(name);
+            } else {
+                markSubtreeEscaped(rhs); // conservative catch-all
+            }
+
             // narrowing warning: rhs is a variable reference, compare widths
             if (rhs->type == "VAR_REF") {
                 VarInfo* srcVar = findVar(rhs->value);
@@ -195,6 +233,20 @@ void BluskChecker::analyze(ASTNode* node) {
             if (!node->children.empty()) {
                 ASTNode* rhs = node->children[0];
                 collectUsages(rhs);
+                Value folded;
+                if (tryFold(rhs, folded)) result.foldedConsts[rhs] = folded;
+
+                if (rhs->type == "NEW_EXPR") {
+                    objectCandidates_.insert(v);
+                    for (auto* arg : rhs->children) markSubtreeEscaped(arg);
+                } else if (rhs->type == "VAR_REF") {
+                    // Same reasoning as VAR_DECL's aliasing case: both
+                    // names must be permanently escaped.
+                    markEscaped(rhs->value);
+                    markEscaped(v);
+                } else {
+                    markSubtreeEscaped(rhs);
+                }
                 if (rhs->type == "VAR_REF" && !target->declaredType.empty()) {
                     VarInfo* srcVar = findVar(rhs->value);
                     if (srcVar && !srcVar->declaredType.empty()) {
@@ -259,15 +311,24 @@ void BluskChecker::analyze(ASTNode* node) {
     // marked dead, its STORE skipped by the compiler, and the program
     // crashes at runtime the instant that line runs.
     if (t == "THE_END_IF" || t == "THE_END_RETURN" || t == "RETURN") {
-        for (auto* c : node->children) collectUsages(c);
+        for (auto* c : node->children) {
+            if (c->type == "CONDITION" && !c->children.empty()) foldIfPossible(c->children[0]);
+            else foldIfPossible(c);
+        }
         return;
     }
 
     // ── IF / FOR / WHILE : recurse into condition and body ───────
     if (t == "IF") {
         for (auto* c : node->children) {
-            if (c->type == "CONDITION") collectUsages(c);
-            else if (c->type == "ELSEIF") { collectUsages(c->children[0]); analyze(c->children[1]); }
+            if (c->type == "CONDITION") {
+                if (!c->children.empty()) foldIfPossible(c->children[0]);
+            }
+            else if (c->type == "ELSEIF") {
+                ASTNode* condNode = c->children[0];
+                if (condNode && !condNode->children.empty()) foldIfPossible(condNode->children[0]);
+                analyze(c->children[1]);
+            }
             else if (c->type == "ELSE")   analyze(c->children[0]);
             else analyze(c);
         }
@@ -275,7 +336,18 @@ void BluskChecker::analyze(ASTNode* node) {
     }
     if (t == "FOR" || t == "WHILE" || t == "FOR_IN") {
         for (auto* c : node->children) {
-            if (c->type == "CONDITION") collectUsages(c);
+            if (c->type == "CONDITION") {
+                if (c->children.size() == 1) {
+                    // WHILE-style: single wrapped expression tree, foldable.
+                    foldIfPossible(c->children[0]);
+                } else {
+                    // C-style for's 3-token COND_LEFT/COND_OP/COND_RIGHT
+                    // form isn't a real expression tree -- just track
+                    // usages the normal way, same as before.
+                    collectUsages(c);
+                }
+            }
+            else if (c->type == "ARRAY_REF") markUsed(c->value, c->line); // for-in's array name
             analyze(c);
         }
         return;
@@ -285,7 +357,7 @@ void BluskChecker::analyze(ASTNode* node) {
     //    tracking), the rest are CASE/DEFAULT nodes whose own children
     //    (the case body) need to be analyzed normally. ─────────────
     if (t == "SWITCH") {
-        if (!node->children.empty()) collectUsages(node->children[0]);
+        if (!node->children.empty()) foldIfPossible(node->children[0]);
         for (size_t ci = 1; ci < node->children.size(); ci++) {
             ASTNode* c = node->children[ci];
             for (auto* cc : c->children) analyze(cc);
@@ -316,7 +388,44 @@ void BluskChecker::analyze(ASTNode* node) {
     // call silently becomes a no-op (no error, just nothing happens).
     if (t == "METHOD_CALL") {
         markUsed(v, node->line);
-        for (auto* c : node->children) analyze(c);
+        for (auto* c : node->children) {
+            // ARG nodes carry the argument's raw token value directly
+            // (not as a VAR_REF child) -- mark used, and conservatively
+            // treat it as escaped since the callee could retain it.
+            if (c->type == "ARG") { markUsed(c->value, node->line); markEscaped(c->value); }
+            analyze(c);
+        }
+        return;
+    }
+
+    // ARRAY_DECL was previously never declared in scope at all, which
+    // meant array names were silently exempt from dead-code elimination
+    // (safe by accident, not by design) and their elements were never
+    // usage-tracked or constant-folded. Declaring them properly here
+    // makes arrays consistent with every other variable kind.
+    if (t == "ARRAY_DECL") {
+        if (!node->children.empty()) {
+            ASTNode* nameNode = node->children[0];
+            declareVar(nameNode->value, node->line, false, v);
+            for (auto* el : nameNode->children) {
+                foldIfPossible(el);
+                markSubtreeEscaped(el); // stored long-term in the array
+            }
+        }
+        return;
+    }
+    if (t == "ARRAY_SET") {
+        markUsed(v, node->line); // v = array name
+        if (node->children.size() >= 1) collectUsages(node->children[0]); // index
+        if (node->children.size() >= 2) {
+            collectUsages(node->children[1]);      // value being stored
+            markSubtreeEscaped(node->children[1]); // escapes into the array
+        }
+        return;
+    }
+    if (t == "ARRAY_GET") {
+        markUsed(v, node->line);
+        if (!node->children.empty()) collectUsages(node->children[0]);
         return;
     }
 
@@ -328,6 +437,17 @@ void BluskChecker::analyze(ASTNode* node) {
 
     // Default: recurse into children
     for (auto* c : node->children) analyze(c);
+}
+
+// Shared helper: does this raw token value look like a variable name
+// (as opposed to a numeric/bool/nil literal)? Used wherever a node
+// stores an operand's raw token directly in ->value instead of wrapping
+// it in a real VAR_REF child (COND_LEFT/RIGHT, ARRAY_IDX, ...).
+static bool looksLikeVarName(const std::string& val) {
+    if (val.empty()) return false;
+    if (std::isdigit((unsigned char)val[0]) || (val[0]=='-' && val.size()>1)) return false;
+    if (val=="true" || val=="false" || val=="nil") return false;
+    return true;
 }
 
 // ── Collect variable usages inside an expression subtree ─────────
@@ -347,13 +467,115 @@ void BluskChecker::collectUsages(ASTNode* node) {
         // into a flat 3-child CONDITION (COND_LEFT, COND_OP, COND_RIGHT)
         // rather than through the full expression parser, so operand
         // names live directly in ->value instead of as VAR_REF children.
-        const std::string& val = node->value;
-        bool isNumeric = !val.empty() &&
-            (std::isdigit((unsigned char)val[0]) || (val[0]=='-' && val.size()>1));
-        if (!isNumeric && val!="true" && val!="false" && val!="nil")
-            markUsed(val, node->line);
+        if (looksLikeVarName(node->value)) markUsed(node->value, node->line);
+    }
+    if (node->type == "ARRAY_IDX" && looksLikeVarName(node->value)) {
+        markUsed(node->value, node->line);
     }
     for (auto* c : node->children) collectUsages(c);
+}
+
+// ── Constant folding: evaluate an expression at check time ─────────
+// Bottom-up: children are folded first, so a partially-constant tree
+// like "(2+3) * x" still gets its constant half cached even though the
+// whole expression can't be. Bails out (returns false) the moment it
+// hits anything it can't fully resolve -- variable references (no
+// constant-propagation yet), object construction, method calls, array
+// access, etc. -- since those genuinely can't be known until runtime.
+bool BluskChecker::tryFold(ASTNode* node, Value& out) {
+    if (!node) return false;
+    const std::string& t = node->type;
+    const std::string& v = node->value;
+
+    if (t == "NUM_LIT") {
+        try {
+            if (v.find('.') != std::string::npos) out = Value::Float(std::stod(v));
+            else                                    out = Value::Int(std::stoll(v));
+        } catch (...) { return false; }
+        return true;
+    }
+    if (t == "STR_LIT")  { out = Value::String(v); return true; }
+    if (t == "BOOL_LIT") { out = Value::Bool(v == "true"); return true; }
+    if (t == "NIL_LIT")  { out = Value::Nil(); return true; }
+
+    if (t == "NEG") {
+        if (node->children.empty()) return false;
+        Value inner;
+        if (!tryFold(node->children[0], inner)) return false;
+        out = -inner;
+        return true;
+    }
+    if (t == "LOGIC_NOT") {
+        if (node->children.empty()) return false;
+        Value inner;
+        if (!tryFold(node->children[0], inner)) return false;
+        out = Value::Bool(!inner.toBool());
+        return true;
+    }
+    if (t == "CAST") {
+        if (node->children.empty()) return false;
+        Value inner;
+        if (!tryFold(node->children[0], inner)) return false;
+        out = inner.castTo(v);
+        return true;
+    }
+    if (t == "BIN_OP" || t == "LOGIC_AND" || t == "LOGIC_OR") {
+        if (node->children.size() < 2) return false;
+        Value l, r;
+        if (!tryFold(node->children[0], l)) return false;
+        if (!tryFold(node->children[1], r)) return false;
+
+        if (t == "LOGIC_AND") { out = Value::Bool(l.toBool() && r.toBool()); return true; }
+        if (t == "LOGIC_OR")  { out = Value::Bool(l.toBool() || r.toBool()); return true; }
+
+        // Division/modulo by a literal zero: don't fold it away here --
+        // let it reach the compiler/runtime and raise the same
+        // "Division by zero" error it always would, at the same point
+        // in execution a developer would expect to see it.
+        if ((v == "/" || v == "%") && r.isNum() && r.toDouble() == 0.0) return false;
+
+        if      (v=="+")  out = l + r;              else if (v=="-")  out = l - r;
+        else if (v=="*")  out = l * r;              else if (v=="/")  out = l / r;
+        else if (v=="%")  out = l % r;              else if (v=="**") out = l.blusk_pow(r);
+        else if (v=="==") out = Value::Bool(l == r); else if (v=="!=") out = Value::Bool(l != r);
+        else if (v=="<")  out = Value::Bool(l <  r); else if (v=="<=") out = Value::Bool(l <= r);
+        else if (v==">")  out = Value::Bool(l >  r); else if (v==">=") out = Value::Bool(l >= r);
+        else return false;
+        return true;
+    }
+
+    // FSTRING, VAR_REF, NEW_EXPR, METHOD_CALL_EXPR, ARRAY_GET, MATH_CALL,
+    // FIELD_GET, etc. all depend on something not known until runtime
+    // (or, for VAR_REF, would need full constant propagation, which this
+    // pass doesn't attempt yet) -- not foldable.
+    return false;
+}
+
+void BluskChecker::foldIfPossible(ASTNode* node) {
+    collectUsages(node);
+    Value folded;
+    if (tryFold(node, folded)) result.foldedConsts[node] = folded;
+}
+
+void BluskChecker::markEscaped(const std::string& name) {
+    escapedVars_.insert(name);
+}
+
+void BluskChecker::markSubtreeEscaped(ASTNode* node) {
+    if (!node) return;
+    if (node->type == "VAR_REF") markEscaped(node->value);
+    // ARG nodes (statement-form method calls) and ARRAY_IDX/ARRAY_GET
+    // (index expressions) carry a variable name directly in ->value
+    // rather than as a VAR_REF child -- same pattern as everywhere else
+    // in this file, so the same explicit check is needed here too.
+    if (node->type == "ARG" || node->type == "PRINT_ARG") markEscaped(node->value);
+    for (auto* c : node->children) markSubtreeEscaped(c);
+}
+
+void BluskChecker::finalizeRcSkipCandidates() {
+    for (auto& name : objectCandidates_) {
+        if (!escapedVars_.count(name)) result.rcSkipVars.insert(name);
+    }
 }
 
 // ── Reporting ──────────────────────────────────────────────────────
@@ -375,6 +597,8 @@ CheckResult BluskChecker::check(ASTNode* root, const std::string& fn) {
     scopeStack.clear();
     refGraph.clear();
     scopeDepth = 0;
+    objectCandidates_.clear();
+    escapedVars_.clear();
 
     std::cerr << "[Checker] Analyzing: " << filename << "\n";
 
@@ -383,6 +607,8 @@ CheckResult BluskChecker::check(ASTNode* root, const std::string& fn) {
     pushScope();
     analyze(root);
     popScope();
+
+    finalizeRcSkipCandidates();
 
     std::unordered_set<std::string> visited, rec;
     for (auto& [name, _] : refGraph) {

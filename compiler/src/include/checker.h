@@ -5,6 +5,7 @@
 #pragma once
 #include "ast.h"
 #include "opcode.h"   // StoreFlag 정의 위치 (단일 소스)
+#include "value.h"
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -61,6 +62,18 @@ struct CheckResult {
     // results back to the declared width on assignment, e.g.
     // "int x = x + 1;" stays 32-bit instead of silently widening.
     std::unordered_map<std::string, std::string> varTypes;
+
+    // Constant-expression values the Checker has already fully computed
+    // at check time (e.g. "2 + 3" -> 5), keyed by the AST node it
+    // evaluated. The Compiler looks this map up before walking an
+    // expression subtree: a hit means it can emit a single LOAD of the
+    // cached value instead of regenerating the ADD/MUL/etc. instructions
+    // that would otherwise recompute the same result at every run. Keyed
+    // by node pointer rather than variable name so it's unambiguous even
+    // when the same variable is reassigned with different expressions at
+    // different points in the file, and so it applies to any constant
+    // sub-expression, not just whole initializers.
+    std::unordered_map<const ASTNode*, Value> foldedConsts;
 };
 
 // ------------------------------------------------------------------
@@ -111,6 +124,53 @@ private:
 
     // ── 표현식에서 사용되는 변수 수집 ────────────────────────────
     void collectUsages(ASTNode* node);
+
+    // ── 상수 표현식 사전 계산 (constant folding) ─────────────────
+    // Attempts to fully evaluate `node` at check time using only
+    // literals and operators the Checker can already resolve (NUM_LIT,
+    // STR_LIT, BOOL_LIT, arithmetic/logic/comparison BIN_OP, NEG,
+    // LOGIC_NOT, CAST). On success, caches the result in
+    // result.foldedConsts[node] and returns true; recurses into children
+    // first, so a subtree like "(2+3) * x" still folds its constant
+    // half even though the whole expression isn't constant. Does not
+    // (yet) propagate through variable references -- only literal
+    // arithmetic is folded, not "num PI = 3.14; ... PI * 2".
+    bool tryFold(ASTNode* node, Value& out);
+
+    // Convenience used at every "root expression" site (conditions,
+    // returns, switch subjects, ...): tracks variable usages the normal
+    // way, then attempts constant folding on the same subtree.
+    void foldIfPossible(ASTNode* node);
+
+    // ── 객체 RC-skip을 위한 이스케이프 분석 ─────────────────────────
+    // A variable declared as "gg x = new Thing(...)" is a candidate for
+    // real RC-skip: if it's provably never aliased into another
+    // variable, passed as a constructor/method argument, stored into an
+    // array, or returned, it's the *sole* owner of that object for its
+    // entire lifetime, and the VM can skip all reference-counting for
+    // it -- the object is never even registered with the GC (see
+    // BluskGC::isTracked/incRef/decRef in gc.h), so there's zero
+    // runtime bookkeeping cost. A variable that fails any of those
+    // checks still runs correctly; it just keeps paying for real RC.
+    //
+    // This can never mark something rcSkip that's actually unsafe to
+    // skip: an rcSkip object is simply never registered with the GC at
+    // all, and its real memory is still safely managed by
+    // std::shared_ptr underneath regardless of our bookkeeping being
+    // wrong -- worst case is a missed optimization, never a
+    // use-after-free or leak-at-the-C++-level.
+    std::unordered_set<std::string> objectCandidates_;
+    std::unordered_set<std::string> escapedVars_;
+
+    void markEscaped(const std::string& name);
+    // Recursively marks every VAR_REF found anywhere under `node` as
+    // escaped -- used wherever a value is known to be handed off
+    // somewhere that could outlive the current binding (constructor
+    // arguments, call arguments, array elements, return values).
+    void markSubtreeEscaped(ASTNode* node);
+    // Runs once after the main analyze() pass: every object candidate
+    // that was never marked escaped becomes a confirmed RC-skip.
+    void finalizeRcSkipCandidates();
 
     // ── 타입 폭 비교 (narrowing 경고용) ──────────────────────────
     // 반환값: 0=동일/문제없음, 1=narrowing(정밀도 손실 가능), -1=타입불일치

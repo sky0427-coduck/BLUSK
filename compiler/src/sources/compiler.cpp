@@ -59,6 +59,20 @@ uint8_t Compiler::compileExpr(ASTNode* node) {
     if (!node) { uint8_t r=ra.alloc(); emit(OP_LOAD_NIL,r); return r; }
     const std::string& t=node->type, &v=node->value;
 
+    // Checker-precomputed constant: skip regenerating this subtree's
+    // instructions entirely and just load the cached result.
+    auto foldIt = checkerResult.foldedConsts.find(node);
+    if (foldIt != checkerResult.foldedConsts.end()) {
+        const Value& fv = foldIt->second;
+        uint8_t r = ra.alloc();
+        if      (fv.isInt())    emit(OP_LOAD_INT,  r,0,0, fv.isInt32()?"i32":"i64", fv.num.i);
+        else if (fv.isFloat())  emit(OP_LOAD_FLOAT,r,0,0, fv.isFloat32()?"f32":"f64", 0, fv.num.f);
+        else if (fv.isString()) emit(OP_LOAD_STR,  r,0,0, fv.str);
+        else if (fv.isBool())   emit(OP_LOAD_BOOL, r,0,0, "", fv.num.b?1:0);
+        else                     emit(OP_LOAD_NIL,  r);
+        return r;
+    }
+
     if (t=="NUM_LIT") {
         uint8_t r=ra.alloc();
         if(v.find('.')!=std::string::npos) emit(OP_LOAD_FLOAT,r,0,0,"",0,std::stod(v));

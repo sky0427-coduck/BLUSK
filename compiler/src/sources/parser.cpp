@@ -343,7 +343,6 @@ ASTNode* Parser::parseVarDecl(const std::string& kw) {
             }
             eatVal(")");nm->children.push_back(ne);
         } else if(peek().type==TOKEN_FSTRING) {nm->children.push_back(parseFString(peek().value));advance();}
-        else if(peek().type==TOKEN_STRING) {ASTNode* v=new ASTNode();v->type="VAR_VALUE_STR";v->value=peek().value;advance();nm->children.push_back(v);}
         else nm->children.push_back(parseExpr());
     }
     n->children.push_back(nm);skipSemicolon();return n;
